@@ -28,6 +28,12 @@ from cs2_picker.services.update import (
     check_for_update,
 )
 
+BLOCK_SUCCESS_MSG = (
+    "Firewall rules applied.\n\n"
+    "Disconnect from the current CS2 server and reconnect "
+    "(or restart CS2) for blocking to take effect."
+)
+
 
 class MainWindow(ctk.CTk):
     C = {
@@ -377,7 +383,7 @@ class MainWindow(ctk.CTk):
     def _selected_regions(self) -> list[str]:
         return list(self.tree.selection())
 
-    def _run_async(self, fn, on_done=None) -> None:
+    def _run_async(self, fn, on_done=None, success_msg: str | None = None) -> None:
         if self.pending:
             messagebox.showwarning("Wait", "An operation is already in progress.")
             return
@@ -386,13 +392,16 @@ class MainWindow(ctk.CTk):
         def work():
             try:
                 result = fn()
-                self.after(0, lambda: self._async_done(result, None, on_done))
+                self.after(
+                    0,
+                    lambda: self._async_done(result, None, on_done, success_msg),
+                )
             except Exception as exc:
-                self.after(0, lambda: self._async_done(None, exc, on_done))
+                self.after(0, lambda: self._async_done(None, exc, on_done, success_msg))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _async_done(self, result, error, on_done) -> None:
+    def _async_done(self, result, error, on_done, success_msg=None) -> None:
         self._set_pending(False)
         if error:
             messagebox.showerror("Error", str(error))
@@ -400,6 +409,8 @@ class MainWindow(ctk.CTk):
         if result and isinstance(result, tuple) and not result[0]:
             messagebox.showerror("Firewall Error", result[1])
             return
+        if success_msg and result and isinstance(result, tuple) and result[0]:
+            messagebox.showinfo("Firewall", success_msg)
         if on_done:
             on_done()
 
@@ -412,6 +423,7 @@ class MainWindow(ctk.CTk):
         self._run_async(
             lambda: block_regions(regions, sd),
             lambda: (self._reload_list(), self._ping_selected_async()),
+            success_msg=BLOCK_SUCCESS_MSG,
         )
 
     def _on_unblock_selected(self) -> None:
@@ -427,7 +439,11 @@ class MainWindow(ctk.CTk):
 
     def _on_block_all(self) -> None:
         sd = self._server_dict()
-        self._run_async(lambda: block_all(sd), lambda: (self._reload_list(), self._ping_all_async()))
+        self._run_async(
+            lambda: block_all(sd),
+            lambda: (self._reload_list(), self._ping_all_async()),
+            success_msg=BLOCK_SUCCESS_MSG,
+        )
 
     def _on_unblock_all(self) -> None:
         sd = self._server_dict()
@@ -506,8 +522,8 @@ class MainWindow(ctk.CTk):
             "How to use:\n"
             "• Cmd/Ctrl + click for multi-select\n"
             "• Double-click to ping selected servers\n"
-            "• Blocking uses macOS pf firewall\n"
-            "• Administrator password is asked once per session\n"
+            "• Blocking uses macOS pf firewall (com.apple anchor)\n"
+            "• Reconnect CS2 after blocking for it to take effect\n"
             "• Updates are checked via GitHub Releases\n"
             "• Cluster merges nearby regions (e.g. China, India) into one row\n\n"
             f"Version: {APP_VERSION}",

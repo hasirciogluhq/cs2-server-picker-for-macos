@@ -1,10 +1,15 @@
 import json
+import shlex
 import subprocess
 from typing import Dict, Set
 
 from cs2_picker.core.config import BLOCKED_FILE, PF_RULES_FILE, SUPPORT_DIR
 from cs2_picker.core.constants import PF_ANCHOR
 from cs2_picker.services.admin import get_admin_session
+
+# macOS pf.conf already evaluates anchors under com.apple/* — a top-level custom
+# anchor like "cs2serverpicker" is never reached unless pf.conf is edited.
+ANCHOR_SHELL = shlex.quote(PF_ANCHOR)
 
 
 def _ensure_dirs() -> None:
@@ -51,19 +56,6 @@ def _run_sudo(shell_cmd: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def _build_pf_rules(blocked: Set[str], server_dict: Dict[str, str]) -> str:
-    lines = ["# CS2 Server Picker — auto-generated", ""]
-    for region in sorted(blocked):
-        ips = server_dict.get(region, "")
-        if not ips:
-            continue
-        ip_list = ", ".join(ip.strip() for ip in ips.split(",") if ip.strip())
-        lines.append(f"# {region.replace(chr(34), '')}")
-        lines.append(f"block out quick proto {{tcp, udp}} from any to {{ {ip_list} }}")
-        lines.append("")
-    return "\n".join(lines)
-
-
 def _run_privileged(shell_cmd: str) -> tuple[bool, str]:
     """Run pfctl as root; prompts once per app session when possible."""
     ok, output = get_admin_session().run_shell(shell_cmd)
@@ -75,17 +67,66 @@ def _run_privileged(shell_cmd: str) -> tuple[bool, str]:
     return _run_sudo(shell_cmd)
 
 
+def _build_pf_rules(blocked: Set[str], server_dict: Dict[str, str]) -> str:
+    lines = ["# CS2 Server Picker — auto-generated", ""]
+    for region in sorted(blocked):
+        ips = server_dict.get(region, "")
+        if not ips:
+            continue
+        ip_list = ", ".join(ip.strip() for ip in ips.split(",") if ip.strip())
+        safe_region = region.replace('"', "")
+        lines.append(f"# {safe_region}")
+        lines.append(
+            f"block out quick proto {{tcp, udp}} from any to {{ {ip_list} }}"
+        )
+        lines.append(
+            f"block in quick proto {{tcp, udp}} from {{ {ip_list} }} to any"
+        )
+        lines.append("")
+    if lines[-1] != "":
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _verify_anchor_rules(expect_blocks: bool) -> tuple[bool, str]:
+    cmd = f"/sbin/pfctl -a {ANCHOR_SHELL} -sr 2>&1"
+    ok, output = _run_privileged(cmd)
+    if not ok:
+        return False, output or "Could not read pf anchor rules."
+
+    has_block = "block" in output
+    if expect_blocks and not has_block:
+        return False, (
+            "pf rules were not loaded into the active firewall.\n"
+            "Try quitting and reopening the app, then block again."
+        )
+    return True, output
+
+
 def _apply_pf_rules(rules_content: str) -> tuple[bool, str]:
     _ensure_dirs()
+    if rules_content and not rules_content.endswith("\n"):
+        rules_content += "\n"
     PF_RULES_FILE.write_text(rules_content)
 
-    pf_path = str(PF_RULES_FILE).replace('"', '\\"')
-    parts = [f"/sbin/pfctl -a {PF_ANCHOR} -F all 2>/dev/null || true"]
-    if rules_content.strip() and "block out" in rules_content:
-        parts.append("/sbin/pfctl -e 2>/dev/null || true")
-        parts.append(f'/sbin/pfctl -a {PF_ANCHOR} -f "{pf_path}"')
+    pf_path = shlex.quote(str(PF_RULES_FILE))
+    expect_blocks = bool(rules_content.strip() and "block out" in rules_content)
 
-    return _run_privileged("; ".join(parts))
+    parts = [f"/sbin/pfctl -a {ANCHOR_SHELL} -F all 2>/dev/null || true"]
+    if expect_blocks:
+        parts.append("/sbin/pfctl -e 2>/dev/null || true")
+        parts.append(f"/sbin/pfctl -a {ANCHOR_SHELL} -f {pf_path}")
+
+    ok, err = _run_privileged("; ".join(parts))
+    if not ok:
+        return False, err
+
+    if expect_blocks:
+        verified, verify_err = _verify_anchor_rules(True)
+        if not verified:
+            return False, verify_err
+
+    return True, err
 
 
 def block_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
