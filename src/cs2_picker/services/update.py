@@ -208,7 +208,7 @@ log() {
 
 log "==== CS2 Server Picker update started (pid=$$) ===="
 log "zip=$ZIP"
-log "target=$KCPU"
+log "target=$TARGET"
 log "waiting for app pid=$PID"
 
 for _ in $(seq 1 400); do
@@ -251,30 +251,30 @@ fi
 chmod -R u+rwX "$STAGED" 2>/dev/null || true
 chmod +x "$MACOS_BIN" "$STAGED/Contents/MacOS/"* 2>/dev/null || true
 
-if [ -d "$KCPU" ]; then
+if [ -d "$TARGET" ]; then
   log "backing up current app"
-  ditto "$KCPU" "$BACKUP" || cp -R "$KCPU" "$BACKUP"
+  ditto "$TARGET" "$BACKUP" || cp -R "$TARGET" "$BACKUP"
 fi
 
 log "installing update"
-rm -rf "$KCPU"
-if ! ditto "$STAGED" "$KCPU"; then
+rm -rf "$TARGET"
+if ! ditto "$STAGED" "$TARGET"; then
   log "install ditto failed — restoring backup"
-  rm -rf "$KCPU"
+  rm -rf "$TARGET"
   if [ -d "$BACKUP" ]; then
-    ditto "$BACKUP" "$KCPU" || cp -R "$BACKUP" "$KCPU"
+    ditto "$BACKUP" "$TARGET" || cp -R "$BACKUP" "$TARGET"
   fi
   exit 1
 fi
 
-MACOS_BIN="$KCPU/Contents/MacOS/CS2ServerPicker"
-chmod -R u+rwX "$KCPU" 2>/dev/null || true
-chmod +x "$MACOS_BIN" "$KCPU/Contents/MacOS/"* 2>/dev/null || true
-xattr -cr "$KCPU" 2>/dev/null || true
-/usr/bin/codesign --force --deep --sign - "$KCPU" 2>/dev/null || log "codesign skipped"
+MACOS_BIN="$TARGET/Contents/MacOS/CS2ServerPicker"
+chmod -R u+rwX "$TARGET" 2>/dev/null || true
+chmod +x "$MACOS_BIN" "$TARGET/Contents/MacOS/"* 2>/dev/null || true
+xattr -cr "$TARGET" 2>/dev/null || true
+/usr/bin/codesign --force --deep --sign - "$TARGET" 2>/dev/null || log "codesign skipped"
 
 log "launching updated app"
-if /usr/bin/open "$KCPU"; then
+if /usr/bin/open "$TARGET"; then
   log "open succeeded"
 elif [ -x "$MACOS_BIN" ]; then
   log "open failed, launching binary directly"
