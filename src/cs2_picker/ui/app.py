@@ -244,7 +244,7 @@ class MainWindow(ctk.CTk):
 
         self._action_btn(
             actions, "Block Selected", self._on_block_selected,
-            0, fg=self.C["block_soft"], hover=self.C["block_h"], text="#ffb4b4",
+            0, fg=self.C["block_soft"], hover=self.C["block_h"], text_color="#ffb4b4",
         )
         self._action_btn(
             actions, "Block All", self._on_block_all,
@@ -256,7 +256,7 @@ class MainWindow(ctk.CTk):
         )
         self._action_btn(
             actions, "Unblock Selected", self._on_unblock_selected,
-            3, fg=self.C["unblock_soft"], hover=self.C["unblock_h"], text="#b8f0d0",
+            3, fg=self.C["unblock_soft"], hover=self.C["unblock_h"], text_color="#b8f0d0",
         )
 
     def _action_btn(self, parent, text, cmd, col, fg, hover, text_color="#ffffff"):
