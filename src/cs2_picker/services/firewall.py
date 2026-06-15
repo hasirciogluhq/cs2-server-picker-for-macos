@@ -1,19 +1,20 @@
 import json
 import shlex
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Dict, Set
 
 from cs2_picker.core.config import (
     BLOCKED_FILE,
     BLOCKED_IPS_FILE,
+    LAST_PF_RULESET_FILE,
     PF_MARKER_BEGIN,
     PF_MARKER_END,
     PF_RULES_FILE,
     SUPPORT_DIR,
 )
-from cs2_picker.services.admin import get_admin_session
+
+PF_CONF = Path("/etc/pf.conf")
 
 
 def _ensure_dirs() -> None:
@@ -41,6 +42,7 @@ def is_blocked(region: str) -> bool:
 
 
 def _run_sudo(shell_cmd: str) -> tuple[bool, str]:
+    """One administrator prompt per block/unblock operation."""
     escaped = shell_cmd.replace("\\", "\\\\").replace('"', '\\"')
     script = f'do shell script "{escaped}" with administrator privileges'
     try:
@@ -58,20 +60,6 @@ def _run_sudo(shell_cmd: str) -> tuple[bool, str]:
         return False, "Command timed out."
     except OSError as exc:
         return False, str(exc)
-
-
-def _run_privileged(shell_cmd: str, *, prefer_osascript: bool = False) -> tuple[bool, str]:
-    """Run shell as root. osascript is the most reliable path for pfctl."""
-    if prefer_osascript:
-        return _run_sudo(shell_cmd)
-
-    ok, output = get_admin_session().run_shell(shell_cmd)
-    if ok:
-        return True, output
-    lowered = output.lower()
-    if "denied" in lowered or "cancel" in lowered:
-        return False, output
-    return _run_sudo(shell_cmd)
 
 
 def _collect_blocked_ips(blocked: Set[str], server_dict: Dict[str, str]) -> list[str]:
@@ -94,11 +82,10 @@ def _sync_blocked_ips_file(blocked: Set[str], server_dict: Dict[str, str]) -> No
 
 
 def _build_pf_rules(blocked: Set[str], server_dict: Dict[str, str]) -> str:
-    """Human-readable rules file (debug). Active rules use the pf table in main ruleset."""
     lines = ["# CS2 Server Picker — auto-generated", ""]
     ips = _collect_blocked_ips(blocked, server_dict)
     if not ips:
-        return "\n".join(lines)
+        return "\n".join(lines) + "\n"
 
     ip_list = ", ".join(ips)
     lines.extend(
@@ -130,10 +117,11 @@ def _build_ruleset_section(blocked: Set[str], server_dict: Dict[str, str]) -> li
     ]
 
 
-def _strip_main_ruleset(current: str, section: list[str]) -> str:
+def _strip_cs2picker_rules(content: str) -> list[str]:
+    """Remove our previous rules (markers, table, block lines)."""
     lines: list[str] = []
     skipping = False
-    for line in current.splitlines():
+    for line in content.splitlines():
         stripped = line.strip()
         if stripped == PF_MARKER_BEGIN:
             skipping = True
@@ -141,9 +129,34 @@ def _strip_main_ruleset(current: str, section: list[str]) -> str:
         if stripped == PF_MARKER_END:
             skipping = False
             continue
-        if not skipping:
-            lines.append(line)
+        if skipping:
+            continue
+        if "cs2picker_blocked" in stripped:
+            continue
+        if stripped.startswith("# CS2PICKER"):
+            continue
+        lines.append(line)
+    return lines
 
+
+def _load_base_ruleset() -> str:
+    if LAST_PF_RULESET_FILE.exists():
+        try:
+            text = LAST_PF_RULESET_FILE.read_text(encoding="utf-8")
+            if text.strip():
+                return text
+        except OSError:
+            pass
+    if PF_CONF.is_file():
+        try:
+            return PF_CONF.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    return ""
+
+
+def _merge_ruleset(base: str, section: list[str]) -> str:
+    lines = _strip_cs2picker_rules(base)
     if not section:
         merged = "\n".join(lines)
         return merged + ("\n" if merged and not merged.endswith("\n") else "")
@@ -160,105 +173,45 @@ def _strip_main_ruleset(current: str, section: list[str]) -> str:
     return merged + ("\n" if not merged.endswith("\n") else "")
 
 
-def _write_temp_rules(content: str) -> Path:
-    handle = tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        prefix="cs2picker-rules-",
-        suffix=".pf",
-        delete=False,
-    )
-    with handle:
-        handle.write(content)
-        return Path(handle.name)
-
-
-def _apply_main_ruleset(content: str) -> tuple[bool, str]:
-    rules_path = _write_temp_rules(content)
-    quoted = shlex.quote(str(rules_path))
-    try:
-        ok, syntax_out = _run_pf_cmd(f"/sbin/pfctl -vnf {quoted} 2>&1")
-        if not ok:
-            return False, syntax_out or "pf rule syntax check failed."
-
-        lowered = syntax_out.lower()
-        if "syntax error" in lowered or "rules must be in order" in lowered:
-            return False, syntax_out
-
-        ok, apply_out = _run_pf_cmd(
-            f"/sbin/pfctl -e 2>/dev/null; /sbin/pfctl -f {quoted} 2>&1"
-        )
-        if not ok:
-            return False, apply_out or "Failed to load pf rules."
-        return True, apply_out
-    finally:
-        rules_path.unlink(missing_ok=True)
-
-
-def _run_pf_cmd(shell_cmd: str) -> tuple[bool, str]:
-    ok, output = _run_privileged(shell_cmd)
-    if ok:
-        return True, output
-    return _run_privileged(shell_cmd, prefer_osascript=True)
-
-
-def _read_main_ruleset() -> tuple[bool, str]:
-    ok, output = _run_pf_cmd("/sbin/pfctl -sr 2>&1")
-    if ok and output.strip():
-        return True, output
-
-    ok, output = _run_pf_cmd("/sbin/pfctl -e 2>/dev/null; /sbin/pfctl -sr 2>&1")
-    if ok and output.strip():
-        return True, output
-
-    return _run_pf_cmd("cat /etc/pf.conf 2>&1")
-
-
-def _verify_main_rules(expect_blocks: bool) -> tuple[bool, str]:
-    ok, output = _read_main_ruleset()
-    if not ok:
-        return False, output or "Could not read pf rules."
-
-    has_marker = PF_MARKER_BEGIN in output
-    has_block = "cs2picker_blocked" in output and "block" in output
-    if expect_blocks and (not has_marker or not has_block):
-        detail = output.strip() or "(empty pf ruleset)"
-        return False, (
-            "pf block rules are not active.\n\n"
-            f"pfctl -sr output:\n{detail[:1200]}"
-        )
-    if not expect_blocks and has_block:
-        return False, "pf block rules were not removed."
-    return True, output
-
-
 def _apply_pf_rules(rules_content: str, blocked: Set[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
     _ensure_dirs()
     PF_RULES_FILE.write_text(rules_content)
-
     _sync_blocked_ips_file(blocked, server_dict)
+
     section = _build_ruleset_section(blocked, server_dict)
     expect_blocks = bool(section)
+    merged = _merge_ruleset(_load_base_ruleset(), section)
 
-    ok, current = _read_main_ruleset()
+    merged_path = SUPPORT_DIR / "merged.pf"
+    merged_path.write_text(merged, encoding="utf-8")
+    quoted = shlex.quote(str(merged_path))
+
+    if expect_blocks:
+        apply_cmd = (
+            f"/sbin/pfctl -vnf {quoted} >/dev/null 2>&1 || exit 1; "
+            f"/sbin/pfctl -e 2>/dev/null; "
+            f"/sbin/pfctl -f {quoted} 2>&1; "
+            f"/sbin/pfctl -sr 2>&1 | grep -q cs2picker_blocked"
+        )
+    else:
+        apply_cmd = (
+            f"/sbin/pfctl -vnf {quoted} >/dev/null 2>&1 || exit 1; "
+            f"/sbin/pfctl -e 2>/dev/null; "
+            f"/sbin/pfctl -f {quoted} 2>&1; "
+            f"! /sbin/pfctl -sr 2>&1 | grep -q cs2picker_blocked"
+        )
+
+    ok, output = _run_sudo(apply_cmd)
     if not ok:
-        return False, current
+        if PF_CONF.is_file() and not LAST_PF_RULESET_FILE.exists():
+            merged = _merge_ruleset(PF_CONF.read_text(encoding="utf-8"), section)
+            merged_path.write_text(merged, encoding="utf-8")
+            ok, output = _run_sudo(apply_cmd)
+        if not ok:
+            return False, output or "Failed to apply pf firewall rules."
 
-    merged = _strip_main_ruleset(current, section)
-    ok, err = _apply_main_ruleset(merged)
-    if not ok and "syntax" in err.lower():
-        ok_base, base = _run_pf_cmd("cat /etc/pf.conf 2>&1")
-        if ok_base and base.strip():
-            merged = _strip_main_ruleset(base, section)
-            ok, err = _apply_main_ruleset(merged)
-    if not ok:
-        return False, err
-
-    verified, verify_err = _verify_main_rules(expect_blocks)
-    if not verified:
-        return False, verify_err
-
-    return True, err
+    LAST_PF_RULESET_FILE.write_text(merged, encoding="utf-8")
+    return True, output
 
 
 def block_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool, str]:

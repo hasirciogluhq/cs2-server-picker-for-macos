@@ -524,7 +524,7 @@ class MainWindow(ctk.CTk):
             "How to use:\n"
             "• Cmd/Ctrl + click for multi-select\n"
             "• Double-click to ping selected servers\n"
-            "• Blocking injects rules into the active macOS pf ruleset\n"
+            "• Blocking uses macOS pf (one password prompt per block/unblock)\n"
             "• Reconnect CS2 after blocking for it to take effect\n"
             "• Updates are checked via GitHub Releases\n"
             "• Cluster merges nearby regions (e.g. China, India) into one row\n\n"
