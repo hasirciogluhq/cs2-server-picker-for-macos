@@ -12,6 +12,7 @@ import customtkinter as ctk
 from cs2_picker.core.config import APP_NAME, APP_VERSION, SETTINGS_FILE, SUPPORT_DIR
 from cs2_picker.core.constants import GITHUB_RELEASES_URL, UPDATE_CHECK_INTERVAL_MS
 from cs2_picker.services.firewall import (
+    allow_only_regions,
     block_all,
     block_regions,
     is_blocked,
@@ -272,24 +273,28 @@ class MainWindow(ctk.CTk):
 
         actions = ctk.CTkFrame(main, fg_color="transparent")
         actions.grid(row=2, column=0, sticky="ew")
-        for i in range(4):
+        for i in range(5):
             actions.grid_columnconfigure(i, weight=1)
 
         self._action_btn(
+            actions, "Allow Only Selected", self._on_allow_only_selected,
+            0, fg=self.C["unblock"], hover=self.C["unblock_h"],
+        )
+        self._action_btn(
             actions, "Block Selected", self._on_block_selected,
-            0, fg=self.C["block_soft"], hover=self.C["block_h"], text_color="#ffb4b4",
+            1, fg=self.C["block_soft"], hover=self.C["block_h"], text_color="#ffb4b4",
         )
         self._action_btn(
             actions, "Block All", self._on_block_all,
-            1, fg=self.C["block"], hover=self.C["block_h"],
+            2, fg=self.C["block"], hover=self.C["block_h"],
         )
         self._action_btn(
             actions, "Unblock All", self._on_unblock_all,
-            2, fg=self.C["unblock"], hover=self.C["unblock_h"],
+            3, fg=self.C["unblock"], hover=self.C["unblock_h"],
         )
         self._action_btn(
             actions, "Unblock Selected", self._on_unblock_selected,
-            3, fg=self.C["unblock_soft"], hover=self.C["unblock_h"], text_color="#b8f0d0",
+            4, fg=self.C["unblock_soft"], hover=self.C["unblock_h"], text_color="#b8f0d0",
         )
 
     def _action_btn(self, parent, text, cmd, col, fg, hover, text_color="#ffffff"):
@@ -413,8 +418,24 @@ class MainWindow(ctk.CTk):
             return
         if success_msg and result and isinstance(result, tuple) and result[0]:
             messagebox.showinfo("Firewall", success_msg)
+        elif result and isinstance(result, tuple) and result[0] and result[1]:
+            message = result[1]
+            if "Applied." in message:
+                message = f"{message}\n\n{BLOCK_SUCCESS_MSG}"
+            messagebox.showinfo("Firewall", message)
         if on_done:
             on_done()
+
+    def _on_allow_only_selected(self) -> None:
+        regions = self._selected_regions()
+        if not regions:
+            messagebox.showinfo("Info", "No servers selected.")
+            return
+        sd = self._server_dict()
+        self._run_async(
+            lambda: allow_only_regions(regions, sd),
+            lambda: (self._reload_list(), self._ping_selected_async()),
+        )
 
     def _on_block_selected(self) -> None:
         regions = self._selected_regions()
@@ -425,7 +446,6 @@ class MainWindow(ctk.CTk):
         self._run_async(
             lambda: block_regions(regions, sd),
             lambda: (self._reload_list(), self._ping_selected_async()),
-            success_msg=BLOCK_SUCCESS_MSG,
         )
 
     def _on_unblock_selected(self) -> None:
@@ -444,7 +464,6 @@ class MainWindow(ctk.CTk):
         self._run_async(
             lambda: block_all(sd),
             lambda: (self._reload_list(), self._ping_all_async()),
-            success_msg=BLOCK_SUCCESS_MSG,
         )
 
     def _on_unblock_all(self) -> None:
@@ -524,6 +543,8 @@ class MainWindow(ctk.CTk):
             "How to use:\n"
             "• Cmd/Ctrl + click for multi-select\n"
             "• Double-click to ping selected servers\n"
+            "• Allow Only Selected = play on chosen server(s), block all others\n"
+            "• Block Selected = block only the chosen server(s)\n"
             "• Blocking uses macOS pf (one password prompt per block/unblock)\n"
             "• Reconnect CS2 after blocking for it to take effect\n"
             "• Updates are checked via GitHub Releases\n"

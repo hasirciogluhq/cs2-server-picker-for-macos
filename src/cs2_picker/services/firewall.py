@@ -15,6 +15,8 @@ from cs2_picker.core.config import (
 )
 
 PF_CONF = Path("/etc/pf.conf")
+PF_IPS_TMP = Path("/tmp/cs2picker-blocked-ips.txt")
+PF_MERGED_TMP = Path("/tmp/cs2picker-merged.pf")
 
 
 def _ensure_dirs() -> None:
@@ -62,15 +64,40 @@ def _run_sudo(shell_cmd: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _validate_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
+    unknown = sorted({region for region in regions if region not in server_dict})
+    if not unknown:
+        return True, ""
+    preview = ", ".join(unknown[:5])
+    if len(unknown) > 5:
+        preview += f" (+{len(unknown) - 5} more)"
+    return False, f"Unknown regions: {preview}"
+
+
 def _collect_blocked_ips(blocked: Set[str], server_dict: Dict[str, str]) -> list[str]:
     ips: set[str] = set()
     for region in blocked:
-        raw = server_dict.get(region, "")
+        if region not in server_dict:
+            raise ValueError(f"Unknown region: {region}")
+        raw = server_dict[region]
         for ip in raw.split(","):
             ip = ip.strip()
             if ip:
                 ips.add(ip)
     return sorted(ips)
+
+
+def _describe_state(blocked: Set[str], server_dict: Dict[str, str]) -> str:
+    if not blocked:
+        return "Applied. No regions blocked."
+    ips = _collect_blocked_ips(blocked, server_dict)
+    preview = ", ".join(sorted(blocked)[:5])
+    if len(blocked) > 5:
+        preview += f" (+{len(blocked) - 5} more)"
+    return (
+        f"Applied. Blocked regions: {len(blocked)}. "
+        f"Blocked IPs: {len(ips)}. ({preview})"
+    )
 
 
 def _sync_blocked_ips_file(blocked: Set[str], server_dict: Dict[str, str]) -> None:
@@ -177,96 +204,156 @@ def _rules_active() -> bool:
         return False
 
 
+def _write_pf_ips_file(ips: list[str]) -> Path:
+    content = "\n".join(ips) + "\n" if ips else ""
+    PF_IPS_TMP.write_text(content, encoding="utf-8")
+    return PF_IPS_TMP
+
+
 def _write_merged_ruleset(section: list[str]) -> Path:
     merged = _merge_ruleset(_load_base_ruleset(), section)
-    merged_path = SUPPORT_DIR / "merged.pf"
-    merged_path.write_text(merged, encoding="utf-8")
-    return merged_path
+    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    (SUPPORT_DIR / "merged.pf").write_text(merged, encoding="utf-8")
+    PF_MERGED_TMP.write_text(merged, encoding="utf-8")
+    return PF_MERGED_TMP
+
+
+def _table_ip_count_cmd() -> str:
+    return (
+        "/sbin/pfctl -t cs2picker_blocked -T show 2>/dev/null"
+        " | /usr/bin/grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+'"
+        " | /usr/bin/wc -l | /usr/bin/tr -d ' '"
+    )
 
 
 def _install_pf_rules() -> tuple[bool, str]:
     _ensure_dirs()
-    section = _build_ruleset_section()
-    merged_path = _write_merged_ruleset(section)
-    quoted = shlex.quote(str(merged_path))
+    merged_path = _write_merged_ruleset(_build_ruleset_section())
+    quoted_merged = shlex.quote(str(merged_path))
     apply_cmd = (
-        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
-        f"/sbin/pfctl -vnf {quoted} >/dev/null 2>&1 || exit 1; "
+        f"/sbin/pfctl -vnf {quoted_merged} >/dev/null 2>&1 && "
         f"/sbin/pfctl -e 2>/dev/null; "
-        f"/sbin/pfctl -f {quoted} 2>&1; "
-        f"/sbin/pfctl -sr 2>&1 | grep -q cs2picker_blocked"
+        f"/sbin/pfctl -f {quoted_merged} 2>&1 && "
+        f"/sbin/pfctl -sr 2>&1 | /usr/bin/grep -q cs2picker_blocked"
     )
     ok, output = _run_sudo(apply_cmd)
-    if not ok and PF_CONF.is_file() and not LAST_PF_RULESET_FILE.exists():
-        merged = _merge_ruleset(PF_CONF.read_text(encoding="utf-8"), section)
-        merged_path.write_text(merged, encoding="utf-8")
+    if not ok and PF_CONF.is_file() and not _rules_active():
+        merged = _merge_ruleset(PF_CONF.read_text(encoding="utf-8"), _build_ruleset_section())
+        PF_MERGED_TMP.write_text(merged, encoding="utf-8")
         ok, output = _run_sudo(apply_cmd)
-    if ok:
-        LAST_PF_RULESET_FILE.write_text(merged_path.read_text(encoding="utf-8"), encoding="utf-8")
-    return ok, output or "Failed to install pf firewall rules."
+    if not ok:
+        return False, output or "Failed to install pf firewall rules."
 
-
-def _remove_pf_rules() -> tuple[bool, str]:
-    _ensure_dirs()
-    merged_path = _write_merged_ruleset([])
-    quoted = shlex.quote(str(merged_path))
-    apply_cmd = (
-        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
-        f"/sbin/pfctl -vnf {quoted} >/dev/null 2>&1 || exit 1; "
-        f"/sbin/pfctl -e 2>/dev/null; "
-        f"/sbin/pfctl -f {quoted} 2>&1; "
-        f"! /sbin/pfctl -sr 2>&1 | grep -q cs2picker_blocked"
-    )
-    ok, output = _run_sudo(apply_cmd)
-    if not ok and PF_CONF.is_file() and not LAST_PF_RULESET_FILE.exists():
-        merged = _merge_ruleset(PF_CONF.read_text(encoding="utf-8"), [])
-        merged_path.write_text(merged, encoding="utf-8")
-        ok, output = _run_sudo(apply_cmd)
-    if ok:
-        LAST_PF_RULESET_FILE.write_text(merged_path.read_text(encoding="utf-8"), encoding="utf-8")
-    return ok, output or "Failed to remove pf firewall rules."
+    LAST_PF_RULESET_FILE.write_text(PF_MERGED_TMP.read_text(encoding="utf-8"), encoding="utf-8")
+    return True, ""
 
 
 def _replace_table_ips(ips: list[str]) -> tuple[bool, str]:
     if not ips:
         return True, ""
-    if not BLOCKED_IPS_FILE.is_file():
-        return False, "Blocked IP list file is missing."
 
-    quoted_ips = shlex.quote(str(BLOCKED_IPS_FILE))
+    _write_pf_ips_file(ips)
+    quoted_ips = shlex.quote(str(PF_IPS_TMP))
+    expected = len(ips)
+    count_cmd = _table_ip_count_cmd()
     apply_cmd = (
-        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>&1; "
-        f"/sbin/pfctl -t cs2picker_blocked -T add -f {quoted_ips} 2>&1"
+        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
+        f"/sbin/pfctl -t cs2picker_blocked -T add -f {quoted_ips} 2>&1 && "
+        f"COUNT=$({count_cmd}); test ${{COUNT}} -eq {expected}"
     )
-    return _run_sudo(apply_cmd)
+    ok, output = _run_sudo(apply_cmd)
+    if not ok:
+        detail = output or "Failed to sync pf blocked IP table."
+        return False, f"{detail}\n(expected {expected} blocked IPs in pf table)"
+    return True, ""
+
+
+def _remove_pf_rules() -> tuple[bool, str]:
+    return _clear_pf_kernel()
+
+
+def _sync_pf_kernel(ips: list[str]) -> tuple[bool, str]:
+    _ensure_dirs()
+    if not ips:
+        return _remove_pf_rules()
+
+    _write_pf_ips_file(ips)
+    merged_path = _write_merged_ruleset(_build_ruleset_section())
+    quoted_merged = shlex.quote(str(merged_path))
+    quoted_ips = shlex.quote(str(PF_IPS_TMP))
+    expected = len(ips)
+    count_cmd = _table_ip_count_cmd()
+
+    apply_cmd = (
+        f"/sbin/pfctl -vnf {quoted_merged} >/dev/null 2>&1 && "
+        f"/sbin/pfctl -e 2>/dev/null; "
+        f"/sbin/pfctl -f {quoted_merged} 2>&1 && "
+        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
+        f"/sbin/pfctl -t cs2picker_blocked -T add -f {quoted_ips} 2>&1 && "
+        f"COUNT=$({count_cmd}); test ${{COUNT}} -eq {expected}"
+    )
+    ok, output = _run_sudo(apply_cmd)
+    if not ok and PF_CONF.is_file() and not _rules_active():
+        merged = _merge_ruleset(PF_CONF.read_text(encoding="utf-8"), _build_ruleset_section())
+        PF_MERGED_TMP.write_text(merged, encoding="utf-8")
+        ok, output = _run_sudo(apply_cmd)
+    if not ok:
+        detail = output or "Failed to sync pf blocked IP table."
+        return False, f"{detail}\n(expected {expected} blocked IPs in pf table)"
+
+    LAST_PF_RULESET_FILE.write_text(PF_MERGED_TMP.read_text(encoding="utf-8"), encoding="utf-8")
+    return True, ""
+
+
+def _clear_pf_kernel() -> tuple[bool, str]:
+    _ensure_dirs()
+    merged_path = _write_merged_ruleset([])
+    quoted_merged = shlex.quote(str(merged_path))
+    apply_cmd = (
+        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
+        f"/sbin/pfctl -vnf {quoted_merged} >/dev/null 2>&1 && "
+        f"/sbin/pfctl -e 2>/dev/null; "
+        f"/sbin/pfctl -f {quoted_merged} 2>&1 && "
+        f"! /sbin/pfctl -sr 2>&1 | /usr/bin/grep -q cs2picker_blocked"
+    )
+    ok, output = _run_sudo(apply_cmd)
+    if not ok and PF_CONF.is_file() and not _rules_active():
+        merged = _merge_ruleset(PF_CONF.read_text(encoding="utf-8"), [])
+        PF_MERGED_TMP.write_text(merged, encoding="utf-8")
+        ok, output = _run_sudo(apply_cmd)
+    if not ok:
+        return False, output or "Failed to remove pf firewall rules."
+
+    LAST_PF_RULESET_FILE.write_text(PF_MERGED_TMP.read_text(encoding="utf-8"), encoding="utf-8")
+    return True, output
 
 
 def _apply_blocked_state(blocked: Set[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
     _ensure_dirs()
+    unknown = sorted(blocked - set(server_dict.keys()))
+    if unknown:
+        preview = ", ".join(unknown[:5])
+        if len(unknown) > 5:
+            preview += f" (+{len(unknown) - 5} more)"
+        return False, f"Unknown regions: {preview}"
+
     ips = _collect_blocked_ips(blocked, server_dict)
     rules = _build_pf_rules(blocked, server_dict)
     PF_RULES_FILE.write_text(rules)
     _sync_blocked_ips_file(blocked, server_dict)
 
-    if not ips:
-        return _remove_pf_rules()
-
-    if not _rules_active():
-        ok, err = _install_pf_rules()
-        if not ok:
-            return False, err
-
-    ok, err = _replace_table_ips(ips)
-    if ok:
-        return True, err
-
-    ok, err = _install_pf_rules()
+    ok, err = _sync_pf_kernel(ips)
     if not ok:
         return False, err
-    return _replace_table_ips(ips)
+    return True, _describe_state(blocked, server_dict)
 
 
 def block_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
+    """Block exactly the given regions. Use when UI selection means regions to block."""
+    valid, err = _validate_regions(regions, server_dict)
+    if not valid:
+        return False, err
+
     blocked = load_blocked()
     blocked.update(regions)
     ok, err = _apply_blocked_state(blocked, server_dict)
@@ -276,9 +363,32 @@ def block_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool
 
 
 def unblock_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
+    valid, err = _validate_regions(regions, server_dict)
+    if not valid:
+        return False, err
+
     blocked = load_blocked()
     for region in regions:
         blocked.discard(region)
+    ok, err = _apply_blocked_state(blocked, server_dict)
+    if ok:
+        save_blocked(blocked)
+    return ok, err
+
+
+def allow_only_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
+    """Allow the given regions and block every other known region.
+
+    Use when UI selection means the servers the user wants to play on.
+    """
+    valid, err = _validate_regions(regions, server_dict)
+    if not valid:
+        return False, err
+    if not regions:
+        return False, "No regions selected."
+
+    allowed = set(regions)
+    blocked = set(server_dict.keys()) - allowed
     ok, err = _apply_blocked_state(blocked, server_dict)
     if ok:
         save_blocked(blocked)
