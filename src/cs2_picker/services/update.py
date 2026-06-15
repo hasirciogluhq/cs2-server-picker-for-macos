@@ -1,4 +1,4 @@
-"""GitHub Releases uzerinden guncelleme kontrolu ve kurulum."""
+"""GitHub Releases update check and install."""
 
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ def extract_app_from_zip(zip_path: Path, work_dir: Path) -> Path:
     if len(apps) == 1:
         return apps[0]
 
-    raise FileNotFoundError(f"{APP_BUNDLE_NAME} zip icinde bulunamadi.")
+    raise FileNotFoundError(f"{APP_BUNDLE_NAME} not found inside the update archive.")
 
 
 def _write_updater_script(current_app: Path, staged_app: Path, pid: int) -> Path:
@@ -177,7 +177,7 @@ rm -f {shlex.quote(str(script_path))}
 def apply_update(release: ReleaseInfo, progress=None) -> None:
     current_app = get_app_bundle_path()
     if current_app is None:
-        raise RuntimeError("Paketlenmis .app disinda otomatik guncelleme yapilamaz.")
+        raise RuntimeError("Self-update is only available from the packaged .app bundle.")
 
     work_dir = Path(tempfile.mkdtemp(prefix="cs2picker-update-"))
     zip_path = work_dir / "update.zip"

@@ -12,7 +12,7 @@ def fetch_server_data() -> Tuple[str, Dict[str, str], Dict[str, str]]:
 
     revision = str(data.get("revision", ""))
     if not revision:
-        raise ValueError("Sunucu verisi alınamadı — revision boş.")
+        raise ValueError("Failed to fetch server data — empty revision.")
 
     clustered: Dict[str, str] = {}
     unclustered: Dict[str, str] = {}

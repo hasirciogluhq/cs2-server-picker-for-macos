@@ -10,22 +10,22 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
 if [ $# -ne 1 ]; then
-  echo "Kullanim: ./scripts/release.sh <versiyon>"
-  echo "Ornek:   ./scripts/release.sh 1.0.2"
+  echo "Usage: ./scripts/release.sh <version>"
+  echo "Example: ./scripts/release.sh 1.0.2"
   exit 1
 fi
 
 NEW_VERSION="${1#v}"
 
 if git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1; then
-  echo "Tag v${NEW_VERSION} zaten var."
+  echo "Tag v${NEW_VERSION} already exists."
   exit 1
 fi
 
 git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
 
 echo ""
-echo "Tag olusturuldu: v${NEW_VERSION}"
+echo "Tag created: v${NEW_VERSION}"
 echo ""
-echo "GitHub'a gonder:"
+echo "Push to GitHub:"
 echo "  git push origin v${NEW_VERSION}"

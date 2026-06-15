@@ -1,4 +1,4 @@
-"""Ana pencere ve uygulama giriş noktası."""
+"""Main window and application entry point."""
 
 import json
 import sys
@@ -133,7 +133,7 @@ class MainWindow(ctk.CTk):
 
         self.update_btn = ctk.CTkButton(
             sidebar,
-            text="Güncelle",
+            text="Update",
             height=34,
             corner_radius=8,
             fg_color=self.C["warn"],
@@ -177,7 +177,7 @@ class MainWindow(ctk.CTk):
 
         ctk.CTkLabel(
             sidebar,
-            text="pf firewall\nadmin gerekir",
+            text="pf firewall\nadmin required",
             font=ctk.CTkFont(size=10),
             text_color=self.C["muted"],
             justify="center",
@@ -194,14 +194,14 @@ class MainWindow(ctk.CTk):
 
         ctk.CTkLabel(
             top,
-            text="Steam Datagram Relay Sunucuları",
+            text="Steam Datagram Relay Servers",
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color=self.C["text"],
         ).grid(row=0, column=0, padx=16, pady=14, sticky="w")
 
         self.status_label = ctk.CTkLabel(
             top,
-            text="Hazırlanıyor…",
+            text="Loading…",
             font=ctk.CTkFont(size=12),
             text_color=self.C["muted"],
         )
@@ -299,15 +299,15 @@ class MainWindow(ctk.CTk):
         if active:
             self.progress.grid()
             self.progress.start()
-            self.status_label.configure(text=msg or "İşlem sürüyor…")
+            self.status_label.configure(text=msg or "Working…")
         else:
             self.progress.stop()
             self.progress.grid_remove()
             count = len(self._server_dict())
-            self.status_label.configure(text=msg or f"{count} sunucu · hazır")
+            self.status_label.configure(text=msg or f"{count} servers · ready")
 
     def _bootstrap(self) -> None:
-        self._set_pending(True, "Sunucu listesi alınıyor…")
+        self._set_pending(True, "Fetching server list…")
 
         def work():
             try:
@@ -320,8 +320,8 @@ class MainWindow(ctk.CTk):
 
     def _on_data_loaded(self, revision, clustered, unclustered, error) -> None:
         if error:
-            self._set_pending(False, "Veri alınamadı")
-            messagebox.showerror("Hata", f"Sunucu verisi alınamadı:\n{error}")
+            self._set_pending(False, "Failed to load data")
+            messagebox.showerror("Error", f"Failed to fetch server data:\n{error}")
             return
 
         self.clustered = clustered
@@ -329,8 +329,8 @@ class MainWindow(ctk.CTk):
 
         if self.server_revision and self.server_revision != revision:
             messagebox.showinfo(
-                "Güncelleme",
-                "Valve sunucu verisini güncelledi.\nEngellenen sunucular sıfırlanacak.",
+                "Update",
+                "Valve updated server data.\nBlocked servers will be reset.",
             )
             self._run_async(lambda: unblock_all(self._server_dict()), self._reload_list)
             self.server_revision = revision
@@ -355,7 +355,7 @@ class MainWindow(ctk.CTk):
 
     def _run_async(self, fn, on_done=None) -> None:
         if self.pending:
-            messagebox.showwarning("Bekle", "Devam eden işlem var.")
+            messagebox.showwarning("Wait", "An operation is already in progress.")
             return
         self._set_pending(True)
 
@@ -371,10 +371,10 @@ class MainWindow(ctk.CTk):
     def _async_done(self, result, error, on_done) -> None:
         self._set_pending(False)
         if error:
-            messagebox.showerror("Hata", str(error))
+            messagebox.showerror("Error", str(error))
             return
         if result and isinstance(result, tuple) and not result[0]:
-            messagebox.showerror("Firewall Hatası", result[1])
+            messagebox.showerror("Firewall Error", result[1])
             return
         if on_done:
             on_done()
@@ -382,7 +382,7 @@ class MainWindow(ctk.CTk):
     def _on_block_selected(self) -> None:
         regions = self._selected_regions()
         if not regions:
-            messagebox.showinfo("Bilgi", "Sunucu seçmedin.")
+            messagebox.showinfo("Info", "No servers selected.")
             return
         sd = self._server_dict()
         self._run_async(
@@ -393,7 +393,7 @@ class MainWindow(ctk.CTk):
     def _on_unblock_selected(self) -> None:
         regions = self._selected_regions()
         if not regions:
-            messagebox.showinfo("Bilgi", "Sunucu seçmedin.")
+            messagebox.showinfo("Info", "No servers selected.")
             return
         sd = self._server_dict()
         self._run_async(
@@ -411,7 +411,7 @@ class MainWindow(ctk.CTk):
 
     def _on_toggle_cluster(self) -> None:
         if self.pending:
-            messagebox.showwarning("Bekle", "Devam eden işlem var.")
+            messagebox.showwarning("Wait", "An operation is already in progress.")
             return
 
         def after_unblock():
@@ -481,13 +481,13 @@ class MainWindow(ctk.CTk):
     def _on_info(self) -> None:
         messagebox.showinfo(
             APP_NAME,
-            "Nasıl kullanılır:\n"
-            "• Cmd/Ctrl + tık ile çoklu seçim\n"
-            "• Çift tık ile seçili sunuculara ping\n"
-            "• Engelleme macOS pf firewall kullanır\n"
-            "• Admin şifresi istenir\n"
-            "• Güncellemeler GitHub Releases'tan kontrol edilir\n\n"
-            f"Sürüm: {APP_VERSION}",
+            "How to use:\n"
+            "• Cmd/Ctrl + click for multi-select\n"
+            "• Double-click to ping selected servers\n"
+            "• Blocking uses macOS pf firewall\n"
+            "• Administrator password required\n"
+            "• Updates are checked via GitHub Releases\n\n"
+            f"Version: {APP_VERSION}",
         )
 
     def _schedule_update_checks(self) -> None:
@@ -514,7 +514,7 @@ class MainWindow(ctk.CTk):
             return
 
         self._pending_release = release
-        self.update_btn.configure(text=f"Güncelle v{release.version}")
+        self.update_btn.configure(text=f"Update v{release.version}")
         if not self.update_btn.winfo_ismapped():
             self.update_btn.pack(fill="x", padx=16, pady=(8, 4), before=self.cluster_btn)
 
@@ -524,24 +524,24 @@ class MainWindow(ctk.CTk):
 
         release = self._pending_release
         if not messagebox.askyesno(
-            "Güncelleme",
-            f"Yeni sürüm v{release.version} mevcut.\n\n"
-            f"Mevcut: v{APP_VERSION}\n\n"
-            "Güncellemek istiyor musun?",
+            "Update",
+            f"Version v{release.version} is available.\n\n"
+            f"Current: v{APP_VERSION}\n\n"
+            "Install this update now?",
         ):
             return
 
         if not can_self_update():
             webbrowser.open(release.html_url)
             messagebox.showinfo(
-                "Güncelleme",
-                "Geliştirme modunda otomatik kurulum yok.\nRelease sayfası tarayıcıda açıldı.",
+                "Update",
+                "Auto-install is not available in dev mode.\nThe release page was opened in your browser.",
             )
             return
 
         self._update_busy = True
         self.update_btn.configure(state="disabled")
-        self.status_label.configure(text=f"v{release.version} indiriliyor…")
+        self.status_label.configure(text=f"Downloading v{release.version}…")
 
         def work():
             try:
@@ -550,14 +550,14 @@ class MainWindow(ctk.CTk):
                     self.after(
                         0,
                         lambda p=pct: self.status_label.configure(
-                            text=f"Güncelleme indiriliyor… %{p}"
+                            text=f"Downloading update… {p}%"
                         ),
                     )
 
                 apply_update(release, progress=on_progress)
                 self.after(0, self.destroy)
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Güncelleme hatası", str(exc)))
+                self.after(0, lambda: messagebox.showerror("Update Error", str(exc)))
                 self.after(0, self._reset_update_ui)
 
         threading.Thread(target=work, daemon=True).start()
@@ -566,11 +566,11 @@ class MainWindow(ctk.CTk):
         self._update_busy = False
         self.update_btn.configure(state="normal")
         count = len(self._server_dict())
-        self.status_label.configure(text=f"{count} sunucu · hazır")
+        self.status_label.configure(text=f"{count} servers · ready")
 
 
 def main() -> None:
     if sys.platform != "darwin":
-        messagebox.showwarning("Platform", "Bu uygulama macOS için tasarlandı.")
+        messagebox.showwarning("Platform", "This application is designed for macOS.")
     app = MainWindow()
     app.mainloop()

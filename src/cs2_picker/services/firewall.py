@@ -41,17 +41,17 @@ def _run_sudo(shell_cmd: str) -> tuple[bool, str]:
             timeout=120,
         )
         if result.returncode != 0:
-            err = result.stderr.strip() or result.stdout.strip() or "Bilinmeyen hata"
+            err = result.stderr.strip() or result.stdout.strip() or "Unknown error"
             return False, err
         return True, result.stdout.strip()
     except subprocess.TimeoutExpired:
-        return False, "Komut zaman aşımına uğradı."
+        return False, "Command timed out."
     except OSError as exc:
         return False, str(exc)
 
 
 def _build_pf_rules(blocked: Set[str], server_dict: Dict[str, str]) -> str:
-    lines = ["# CS2 Server Picker — otomatik oluşturuldu", ""]
+    lines = ["# CS2 Server Picker — auto-generated", ""]
     for region in sorted(blocked):
         ips = server_dict.get(region, "")
         if not ips:

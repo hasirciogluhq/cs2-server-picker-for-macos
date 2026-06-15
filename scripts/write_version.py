@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Git tag veya argümandan _version.py yazar."""
+"""Write src/cs2_picker/_version.py from a git tag or CLI argument."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
 def write_version(version: str) -> None:
     if not SEMVER.match(version):
-        raise SystemExit(f"Gecersiz versiyon: {version!r} (ornek: 1.0.2)")
+        raise SystemExit(f"Invalid version: {version!r} (example: 1.0.2)")
 
     VERSION_FILE.write_text(f'__version__ = "{version}"\n', encoding="utf-8")
     print(f"Version embedded: {version}")
@@ -23,7 +23,7 @@ def write_version(version: str) -> None:
 
 def main() -> None:
     if len(sys.argv) != 2:
-        raise SystemExit(f"Kullanim: {Path(sys.argv[0]).name} <versiyon>")
+        raise SystemExit(f"Usage: {Path(sys.argv[0]).name} <version>")
     write_version(sys.argv[1].lstrip("v"))
 
 

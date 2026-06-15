@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sh ile cagrildiysa bash'e gec
+# Re-exec with bash if invoked via sh
 if [ -z "${BASH_VERSION:-}" ]; then
   exec /usr/bin/env bash "$0" "$@"
 fi
@@ -55,9 +55,9 @@ find_python() {
     if ! python_is_healthy "$py"; then
       ver="$(python_version_major_minor "$py")"
       if [ "$ver" = "3.14" ]; then
-        echo "Atlandi: $py (Python 3.14 — Homebrew pyexpat sorunu, desteklenmiyor)" >&2
+        echo "Skipped: $py (Python 3.14 — Homebrew pyexpat issue, unsupported)" >&2
       else
-        echo "Atlandi: $py (saglik kontrolu basarisiz)" >&2
+        echo "Skipped: $py (health check failed)" >&2
       fi
       continue
     fi
@@ -69,22 +69,22 @@ find_python() {
 
 print_python_help() {
   cat <<'EOF'
-Uygun Python bulunamadi.
+No suitable Python interpreter found.
 
-Mac'te Homebrew Python 3.14'te bilinen pyexpat/libexpat hatasi var.
-Bu proje icin Python 3.11 veya 3.12 kullan.
+Homebrew Python 3.14 has a known pyexpat/libexpat issue.
+Use Python 3.11 or 3.12 for this project.
 
-Cozum A (onerilen):
+Option A (recommended):
   brew install python@3.12
   rm -rf .venv
   ./scripts/build.sh
 
-Cozum B (uv — Python'i otomatik indirir):
+Option B (uv — downloads Python automatically):
   curl -LsSf https://astral.sh/uv/install.sh | sh
   rm -rf .venv
   ./scripts/build.sh
 
-Cozum C (elle):
+Option C (manual):
   CS2_PICKER_PYTHON=/opt/homebrew/bin/python3.12 ./scripts/build.sh
 EOF
 }
@@ -101,10 +101,10 @@ bootstrap_pip() {
     return 0
   fi
   if ! command -v curl >/dev/null 2>&1; then
-    echo "Hata: pip kurulamadi ve curl yok."
+    echo "Error: could not install pip and curl is missing."
     return 1
   fi
-  echo "pip bootstrap ediliyor..."
+  echo "Bootstrapping pip..."
   curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$venv_py"
 }
 
@@ -132,7 +132,7 @@ create_venv_with_python() {
 
 create_venv_with_uv() {
   rm -rf "$ROOT/.venv"
-  echo "uv ile Python 3.12 sanal ortami olusturuluyor..."
+  echo "Creating Python 3.12 virtualenv with uv..."
   uv venv "$ROOT/.venv" --python 3.12
   python_is_healthy "$ROOT/.venv/bin/python"
 }
@@ -157,7 +157,7 @@ ensure_venv() {
     exit 1
   }
 
-  echo "Sanal ortam hazirlaniyor ($py)..."
+  echo "Preparing virtualenv ($py)..."
   if ! create_venv_with_python "$py"; then
     print_python_help
     exit 1
@@ -178,24 +178,24 @@ pip_install() {
 
 require_macos_build_tools() {
   if [ "$(uname -s)" != "Darwin" ]; then
-    echo "Hata: macOS .app derlemesi sadece macOS'ta yapilabilir."
+    echo "Error: .app builds are only supported on macOS."
     exit 1
   fi
   if ! xcode-select -p >/dev/null 2>&1; then
     cat <<'EOF'
-Hata: Xcode Command Line Tools kurulu degil (PyInstaller lipo icin gerekir).
+Error: Xcode Command Line Tools are not installed (required for PyInstaller lipo).
 
-Kurulum:
+Install:
   xcode-select --install
 
-Kurulumdan sonra:
+Then run:
   rm -rf .pyinstaller-work dist
   ./scripts/build.sh
 EOF
     exit 1
   fi
   if ! command -v lipo >/dev/null 2>&1; then
-    echo "Hata: lipo bulunamadi. Xcode Command Line Tools'u yeniden kur."
+    echo "Error: lipo not found. Reinstall Xcode Command Line Tools."
     exit 1
   fi
 }
@@ -220,6 +220,6 @@ zip_app_bundle() {
     return 0
   fi
 
-  echo "ditto basarisiz, zip ile paketleniyor..."
+  echo "ditto failed, falling back to zip..."
   (cd "$app_dir" && zip -ry "$zip_dir/$zip_file" "$app_name")
 }

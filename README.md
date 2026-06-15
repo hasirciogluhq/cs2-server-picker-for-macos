@@ -1,46 +1,48 @@
 # CS2 Server Picker for macOS
 
-Steam Datagram Relay (SDR) sunucularını listeler, ping ölçer ve macOS `pf` firewall ile engeller.
+Lists Steam Datagram Relay (SDR) servers, measures ping, and blocks relays via the macOS `pf` firewall.
 
-## Proje yapısı
+Inspired by the original Windows [cs2-server-picker](https://github.com/FN-FAL113/cs2-server-picker).
+
+## Project structure
 
 ```
 .
-├── src/cs2_picker/          # Uygulama kaynak kodu
+├── src/cs2_picker/
 │   ├── __main__.py          # python -m cs2_picker
-│   ├── _version.py          # Build sırasında tag'den yazılır
+│   ├── _version.py          # written from git tag at build time
 │   ├── core/                # config, constants
-│   ├── services/            # server, firewall, ping
-│   └── ui/                  # arayüz
+│   ├── services/            # server, firewall, ping, update
+│   └── ui/                  # main window
 ├── scripts/
-│   ├── run.sh               # geliştirme
-│   ├── build.sh             # .app derleme
-│   ├── release.sh           # tag oluştur
-│   └── write_version.py     # versiyon gömme
+│   ├── run.sh               # dev mode
+│   ├── build.sh             # build .app
+│   ├── release.sh           # create git tag
+│   └── write_version.py     # embed version
 ├── packaging/
-│   └── CS2ServerPicker.spec # PyInstaller
+│   └── CS2ServerPicker.spec
 └── .github/workflows/       # CI + Release
 ```
 
-## Geliştirme
+## Development
 
 ```bash
 chmod +x scripts/run.sh
 ./scripts/run.sh
 ```
 
-## macOS .app derleme
+## Build macOS .app
 
 ```bash
 chmod +x scripts/build.sh
 ./scripts/build.sh
 ```
 
-Yerel build son tag'den versiyon alır (yoksa `0.0.0-dev`).
+Local builds use the latest git tag for version (or `0.0.0-dev` if none).
 
 ## Release
 
-Versiyon **tek kaynak: git tag**. `VERSION` dosyası yok.
+Version source of truth: **git tag** (no `VERSION` file).
 
 ```bash
 chmod +x scripts/release.sh
@@ -48,18 +50,22 @@ chmod +x scripts/release.sh
 git push origin v1.0.2
 ```
 
-`v1.0.2` push edilince GitHub Actions:
+When `v1.0.2` is pushed, GitHub Actions will:
 
-1. Tag'den `1.0.2` okur
-2. `_version.py` ve `.app` Info.plist'e gömer
-3. `.zip` + `.dmg` oluşturur
-4. GitHub Release yayınlar
+1. Read `1.0.2` from the tag
+2. Embed it in `_version.py` and the `.app` Info.plist
+3. Build `.zip` and `.dmg`
+4. Publish a GitHub Release
 
-## Gereksinimler
+## Updates
+
+The app checks GitHub Releases every 60 seconds. If a newer version exists, an **Update** button appears in the sidebar. Updates install only when you click the button (no silent auto-update).
+
+## Requirements
 
 - macOS 11+
-- **Python 3.11 veya 3.12** (Homebrew Python 3.14 desteklenmiyor — pyexpat hatası)
-- Admin şifresi (firewall)
+- **Python 3.11 or 3.12** (Homebrew Python 3.14 is not supported — pyexpat issue)
+- Administrator password (firewall rules)
 
 Python 3.12:
 
@@ -68,19 +74,19 @@ brew install python@3.12
 rm -rf .venv && ./scripts/build.sh
 ```
 
-Alternatif — `uv` Python 3.12'yi otomatik indirir:
+Alternative — `uv` downloads Python 3.12 automatically:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 rm -rf .venv && ./scripts/build.sh
 ```
 
-`.app` derlemesi icin **Xcode Command Line Tools** (lipo):
+**Xcode Command Line Tools** are required to build the `.app` (PyInstaller uses `lipo`):
 
 ```bash
 xcode-select --install
 ```
 
-## Uyarı
+## Disclaimer
 
-Bu proje Valve ile bağlantılı değildir.
+This project is not affiliated with Valve.

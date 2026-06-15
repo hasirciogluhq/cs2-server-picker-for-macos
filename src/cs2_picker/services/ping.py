@@ -8,14 +8,13 @@ from cs2_picker.core.constants import PING_TIMEOUT_MS
 
 def ping_ip(ip: str, timeout_ms: int = PING_TIMEOUT_MS) -> Optional[int]:
     """
-    Tek IP'ye ICMP ping.
-    macOS: -W = bekleme suresi (milisaniye)
-    Linux: -W = bekleme suresi (saniye)
+    ICMP ping to a single IP.
+    macOS: -W wait time in milliseconds
+    Linux: -W wait time in seconds
     """
     system = platform.system()
     try:
         if system == "Darwin":
-            # Eski kod timeout_ms//1000 kullaniyordu -> 5000ms icin -W 5 (= 5ms!) hata
             cmd = ["ping", "-c", "1", "-W", str(timeout_ms), ip]
             proc_timeout = (timeout_ms / 1000) + 3
         else:
@@ -33,7 +32,6 @@ def ping_ip(ip: str, timeout_ms: int = PING_TIMEOUT_MS) -> Optional[int]:
             return None
 
         output = result.stdout + result.stderr
-        # time=12.345 ms  veya  time=12.345ms
         match = re.search(r"time[=<]\s*(\d+(?:\.\d+)?)\s*ms", output, re.IGNORECASE)
         if match:
             return int(float(match.group(1)))
@@ -48,7 +46,7 @@ def ping_server(
     timeout_ms: int = PING_TIMEOUT_MS,
 ) -> tuple[str, str]:
     if blocked:
-        return "Engelli", "blocked"
+        return "Blocked", "blocked"
 
     for ip in addresses.split(","):
         ip = ip.strip()
@@ -58,5 +56,4 @@ def ping_server(
         if latency is not None and latency >= 0:
             return f"{latency} ms", "ok"
 
-    # VB: "Ping timed out, try again..."
-    return "Zaman aşımı, tekrar dene…", "timeout"
+    return "Ping timed out, try again...", "timeout"
