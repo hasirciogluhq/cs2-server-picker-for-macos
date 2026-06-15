@@ -150,24 +150,60 @@ def extract_app_from_zip(zip_path: Path, work_dir: Path) -> Path:
     raise FileNotFoundError(f"{APP_BUNDLE_NAME} not found inside the update archive.")
 
 
+def _update_log_path() -> Path:
+    log_dir = Path.home() / "Library" / "Logs" / "CS2ServerPicker"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "update.log"
+
+
 def _write_updater_script(current_app: Path, staged_app: Path, pid: int) -> Path:
     script_path = Path(tempfile.gettempdir()) / f"cs2picker-update-{pid}.sh"
+    log_path = _update_log_path()
     script = f"""#!/bin/bash
-set -euo pipefail
+set -u
 TARGET={shlex.quote(str(current_app))}
 STAGED={shlex.quote(str(staged_app))}
+WORKDIR={shlex.quote(str(staged_app.parent.parent))}
 PID={pid}
+LOG={shlex.quote(str(log_path))}
+MACOS_BIN="$TARGET/Contents/MacOS/CS2ServerPicker"
 
-while kill -0 "$PID" 2>/dev/null; do
-  sleep 0.3
+log() {{
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"
+}}
+
+log "Updater started (pid=$$, waiting for app pid=$PID)"
+
+for _ in $(seq 1 300); do
+  if ! kill -0 "$PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.2
 done
 
+sleep 1
+
+log "Replacing $TARGET"
 rm -rf "$TARGET"
-ditto "$STAGED" "$TARGET"
+if ! ditto "$STAGED" "$TARGET"; then
+  log "ditto failed"
+  exit 1
+fi
+
 xattr -cr "$TARGET" 2>/dev/null || true
-open "$TARGET"
-rm -rf "$(dirname "$STAGED")"
+chmod -R u+rwX "$TARGET" 2>/dev/null || true
+
+log "Launching updated app"
+if [ -x "$MACOS_BIN" ]; then
+  /usr/bin/open -n "$TARGET" || "$MACOS_BIN" &
+else
+  /usr/bin/open -n "$TARGET"
+fi
+
+sleep 1
+rm -rf "$WORKDIR"
 rm -f {shlex.quote(str(script_path))}
+log "Update complete"
 """
     script_path.write_text(script, encoding="utf-8")
     script_path.chmod(0o755)
@@ -189,8 +225,11 @@ def apply_update(release: ReleaseInfo, progress=None) -> None:
         subprocess.Popen(
             ["/bin/bash", str(script)],
             start_new_session=True,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            close_fds=True,
+            cwd="/",
         )
     except Exception:
         import shutil

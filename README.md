@@ -1,5 +1,7 @@
 # CS2 Server Picker for macOS
 
+![CS2 Server Picker for macOS](assets/app-screenshot.png)
+
 Lists Steam Datagram Relay (SDR) servers, measures ping, and blocks relays via the macOS `pf` firewall.
 
 Inspired by the original Windows [cs2-server-picker](https://github.com/FN-FAL113/cs2-server-picker).

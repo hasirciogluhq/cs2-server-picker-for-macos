@@ -1,6 +1,7 @@
 """Main window and application entry point."""
 
 import json
+import os
 import sys
 import threading
 import webbrowser
@@ -506,7 +507,7 @@ class MainWindow(ctk.CTk):
             "• Cmd/Ctrl + click for multi-select\n"
             "• Double-click to ping selected servers\n"
             "• Blocking uses macOS pf firewall\n"
-            "• Administrator password required\n"
+            "• Administrator password is asked once per session\n"
             "• Updates are checked via GitHub Releases\n"
             "• Cluster merges nearby regions (e.g. China, India) into one row\n\n"
             f"Version: {APP_VERSION}",
@@ -577,12 +578,20 @@ class MainWindow(ctk.CTk):
                     )
 
                 apply_update(release, progress=on_progress)
-                self.after(0, self.destroy)
+                self.after(0, self._quit_for_update)
             except Exception as exc:
                 self.after(0, lambda: messagebox.showerror("Update Error", str(exc)))
                 self.after(0, self._reset_update_ui)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _quit_for_update(self) -> None:
+        try:
+            self.quit()
+            self.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
     def _reset_update_ui(self) -> None:
         self._update_busy = False
