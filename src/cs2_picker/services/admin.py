@@ -122,7 +122,11 @@ class AdminSession:
             return False, err
 
         out_path = Path(tempfile.gettempdir()) / f"cs2picker-admin-{os.getpid()}.out"
-        wrapped = f"({cmd}) > {shlex.quote(str(out_path))} 2>&1"
+        code_path = Path(tempfile.gettempdir()) / f"cs2picker-admin-{os.getpid()}.code"
+        wrapped = (
+            f"({cmd}) > {shlex.quote(str(out_path))} 2>&1; "
+            f"ec=$?; echo $ec > {shlex.quote(str(code_path))}; exit 0"
+        )
 
         args = [b"/bin/sh", b"-c", wrapped.encode("utf-8")]
         argv = (c_char_p * (len(args) + 1))()
@@ -141,9 +145,21 @@ class AdminSession:
             return False, f"Failed to run privileged command ({status})."
 
         output = ""
+        exit_code = 1
         if out_path.exists():
             output = out_path.read_text(encoding="utf-8", errors="replace").strip()
             out_path.unlink(missing_ok=True)
+        if code_path.exists():
+            raw = code_path.read_text(encoding="utf-8", errors="replace").strip()
+            code_path.unlink(missing_ok=True)
+            try:
+                exit_code = int(raw)
+            except ValueError:
+                exit_code = 1
+
+        if exit_code != 0:
+            detail = output or f"Privileged command failed (exit {exit_code})."
+            return False, detail
 
         return True, output
 

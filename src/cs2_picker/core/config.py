@@ -10,3 +10,6 @@ SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "CS2ServerPicker
 SETTINGS_FILE = SUPPORT_DIR / "settings.json"
 BLOCKED_FILE = SUPPORT_DIR / "blocked.json"
 PF_RULES_FILE = SUPPORT_DIR / "rules.pf"
+BLOCKED_IPS_FILE = SUPPORT_DIR / "blocked-ips.txt"
+PF_MARKER_BEGIN = "# CS2PICKER-BEGIN"
+PF_MARKER_END = "# CS2PICKER-END"
