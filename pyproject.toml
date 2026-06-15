@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cs2-server-picker"
+dynamic = ["version"]
+description = "CS2 Server Picker for macOS"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "customtkinter>=5.2.2",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+cs2-server-picker = "cs2_picker.ui.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "cs2_picker._version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
