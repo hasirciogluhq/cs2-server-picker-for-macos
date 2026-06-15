@@ -42,12 +42,9 @@ def ping_ip(ip: str, timeout_ms: int = PING_TIMEOUT_MS) -> Optional[int]:
 
 def ping_server(
     addresses: str,
-    blocked: bool = False,
     timeout_ms: int = PING_TIMEOUT_MS,
 ) -> tuple[str, str]:
-    if blocked:
-        return "Blocked", "blocked"
-
+    """Return latency label and status (ok | timeout). Always attempts ping."""
     for ip in addresses.split(","):
         ip = ip.strip()
         if not ip:

@@ -240,7 +240,7 @@ class MainWindow(ctk.CTk):
             foreground=[("selected", "#ffffff")],
         )
 
-        cols = ("server", "latency")
+        cols = ("server", "latency", "blocked")
         self.tree = ttk.Treeview(
             table_wrap,
             columns=cols,
@@ -250,8 +250,10 @@ class MainWindow(ctk.CTk):
         )
         self.tree.heading("server", text="Servers")
         self.tree.heading("latency", text="Latency")
-        self.tree.column("server", width=560, anchor="w", stretch=True)
+        self.tree.heading("blocked", text="Blocked")
+        self.tree.column("server", width=420, anchor="w", stretch=True)
         self.tree.column("latency", width=140, anchor="center", stretch=False)
+        self.tree.column("blocked", width=80, anchor="center", stretch=False)
 
         scroll = ctk.CTkScrollbar(table_wrap, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -344,11 +346,32 @@ class MainWindow(ctk.CTk):
         self._set_pending(False)
         self._ping_all_async()
 
+    def _blocked_label(self, region: str) -> str:
+        return "true" if is_blocked(region) else "false"
+
+    def _apply_row_style(self, region: str, ping_status: str) -> None:
+        if is_blocked(region):
+            self.tree.item(region, tags=("blocked",))
+        elif ping_status == "timeout":
+            self.tree.item(region, tags=("timeout",))
+        else:
+            self.tree.item(region, tags=("ok",))
+
+        self.tree.tag_configure("blocked", foreground="#ff6b6b")
+        self.tree.tag_configure("ok", foreground="#6ee7a0")
+        self.tree.tag_configure("timeout", foreground="#f5a623")
+
     def _reload_list(self) -> None:
         for item in self.tree.get_children():
             self.tree.delete(item)
         for region in sorted(self._server_dict().keys()):
-            self.tree.insert("", "end", iid=region, values=(region, "—"))
+            self.tree.insert(
+                "",
+                "end",
+                iid=region,
+                values=(region, "—", self._blocked_label(region)),
+            )
+            self._apply_row_style(region, "ok")
 
     def _selected_regions(self) -> list[str]:
         return list(self.tree.selection())
@@ -429,21 +452,13 @@ class MainWindow(ctk.CTk):
     def _on_refresh_selected_ping(self) -> None:
         self._ping_selected_async()
 
-    def _update_row_ping(self, region: str, text: str, status: str) -> None:
+    def _update_row_ping(self, region: str, text: str, ping_status: str) -> None:
         try:
             self.tree.set(region, "latency", text)
-            if status == "blocked":
-                self.tree.item(region, tags=("blocked",))
-            elif status == "ok":
-                self.tree.item(region, tags=("ok",))
-            elif status == "timeout":
-                self.tree.item(region, tags=("timeout",))
+            self.tree.set(region, "blocked", self._blocked_label(region))
+            self._apply_row_style(region, ping_status)
         except Exception:
             pass
-
-        self.tree.tag_configure("blocked", foreground="#ff8080")
-        self.tree.tag_configure("ok", foreground="#6ee7a0")
-        self.tree.tag_configure("timeout", foreground="#f5a623")
 
     def _ping_all_async(self) -> None:
         self._ping_cancel.set()
@@ -456,10 +471,13 @@ class MainWindow(ctk.CTk):
                 if cancel.is_set():
                     return
                 self.after(0, lambda r=region: self._update_row_ping(r, "…", "ok"))
-                text, status = ping_server(sd[region], is_blocked(region))
+                text, ping_status = ping_server(sd[region])
                 if cancel.is_set():
                     return
-                self.after(0, lambda r=region, t=text, s=status: self._update_row_ping(r, t, s))
+                self.after(
+                    0,
+                    lambda r=region, t=text, s=ping_status: self._update_row_ping(r, t, s),
+                )
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -473,8 +491,11 @@ class MainWindow(ctk.CTk):
             for region in regions:
                 if region not in sd:
                     continue
-                text, status = ping_server(sd[region], is_blocked(region))
-                self.after(0, lambda r=region, t=text, s=status: self._update_row_ping(r, t, s))
+                text, ping_status = ping_server(sd[region])
+                self.after(
+                    0,
+                    lambda r=region, t=text, s=ping_status: self._update_row_ping(r, t, s),
+                )
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -486,7 +507,8 @@ class MainWindow(ctk.CTk):
             "• Double-click to ping selected servers\n"
             "• Blocking uses macOS pf firewall\n"
             "• Administrator password required\n"
-            "• Updates are checked via GitHub Releases\n\n"
+            "• Updates are checked via GitHub Releases\n"
+            "• Cluster merges nearby regions (e.g. China, India) into one row\n\n"
             f"Version: {APP_VERSION}",
         )
 
