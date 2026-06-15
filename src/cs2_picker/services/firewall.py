@@ -17,6 +17,7 @@ from cs2_picker.core.config import (
 PF_CONF = Path("/etc/pf.conf")
 PF_IPS_TMP = Path("/tmp/cs2picker-blocked-ips.txt")
 PF_MERGED_TMP = Path("/tmp/cs2picker-merged.pf")
+PF_ADD_LOG = Path("/tmp/cs2picker-pf-add.log")
 
 
 def _ensure_dirs() -> None:
@@ -218,11 +219,13 @@ def _write_merged_ruleset(section: list[str]) -> Path:
     return PF_MERGED_TMP
 
 
-def _table_ip_count_cmd() -> str:
+def _table_add_verify_cmd(quoted_ips: str, expected: int) -> str:
+    """Verify pf table load using pfctl's own add summary (reliable on macOS)."""
+    quoted_log = shlex.quote(str(PF_ADD_LOG))
     return (
-        "/sbin/pfctl -t cs2picker_blocked -T show 2>/dev/null"
-        " | /usr/bin/grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+'"
-        " | /usr/bin/wc -l | /usr/bin/tr -d ' '"
+        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
+        f"/sbin/pfctl -t cs2picker_blocked -T add -f {quoted_ips} >{quoted_log} 2>&1 && "
+        f"/usr/bin/grep -qE '{expected}/{expected} addresses added' {quoted_log}"
     )
 
 
@@ -233,7 +236,7 @@ def _install_pf_rules() -> tuple[bool, str]:
     apply_cmd = (
         f"/sbin/pfctl -vnf {quoted_merged} >/dev/null 2>&1 && "
         f"/sbin/pfctl -e 2>/dev/null; "
-        f"/sbin/pfctl -f {quoted_merged} 2>&1 && "
+        f"/sbin/pfctl -f {quoted_merged} 2>/dev/null && "
         f"/sbin/pfctl -sr 2>&1 | /usr/bin/grep -q cs2picker_blocked"
     )
     ok, output = _run_sudo(apply_cmd)
@@ -255,15 +258,17 @@ def _replace_table_ips(ips: list[str]) -> tuple[bool, str]:
     _write_pf_ips_file(ips)
     quoted_ips = shlex.quote(str(PF_IPS_TMP))
     expected = len(ips)
-    count_cmd = _table_ip_count_cmd()
-    apply_cmd = (
-        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
-        f"/sbin/pfctl -t cs2picker_blocked -T add -f {quoted_ips} 2>&1 && "
-        f"COUNT=$({count_cmd}); test ${{COUNT}} -eq {expected}"
-    )
+    apply_cmd = _table_add_verify_cmd(quoted_ips, expected)
     ok, output = _run_sudo(apply_cmd)
     if not ok:
         detail = output or "Failed to sync pf blocked IP table."
+        if PF_ADD_LOG.is_file():
+            try:
+                log_tail = PF_ADD_LOG.read_text(encoding="utf-8").strip().splitlines()[-1:]
+                if log_tail:
+                    detail = log_tail[0]
+            except OSError:
+                pass
         return False, f"{detail}\n(expected {expected} blocked IPs in pf table)"
     return True, ""
 
@@ -282,15 +287,12 @@ def _sync_pf_kernel(ips: list[str]) -> tuple[bool, str]:
     quoted_merged = shlex.quote(str(merged_path))
     quoted_ips = shlex.quote(str(PF_IPS_TMP))
     expected = len(ips)
-    count_cmd = _table_ip_count_cmd()
 
     apply_cmd = (
         f"/sbin/pfctl -vnf {quoted_merged} >/dev/null 2>&1 && "
         f"/sbin/pfctl -e 2>/dev/null; "
-        f"/sbin/pfctl -f {quoted_merged} 2>&1 && "
-        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
-        f"/sbin/pfctl -t cs2picker_blocked -T add -f {quoted_ips} 2>&1 && "
-        f"COUNT=$({count_cmd}); test ${{COUNT}} -eq {expected}"
+        f"/sbin/pfctl -f {quoted_merged} 2>/dev/null && "
+        f"{_table_add_verify_cmd(quoted_ips, expected)}"
     )
     ok, output = _run_sudo(apply_cmd)
     if not ok and PF_CONF.is_file() and not _rules_active():
@@ -299,6 +301,13 @@ def _sync_pf_kernel(ips: list[str]) -> tuple[bool, str]:
         ok, output = _run_sudo(apply_cmd)
     if not ok:
         detail = output or "Failed to sync pf blocked IP table."
+        if PF_ADD_LOG.is_file():
+            try:
+                log_tail = PF_ADD_LOG.read_text(encoding="utf-8").strip().splitlines()[-1:]
+                if log_tail:
+                    detail = log_tail[0]
+            except OSError:
+                pass
         return False, f"{detail}\n(expected {expected} blocked IPs in pf table)"
 
     LAST_PF_RULESET_FILE.write_text(PF_MERGED_TMP.read_text(encoding="utf-8"), encoding="utf-8")
@@ -313,7 +322,7 @@ def _clear_pf_kernel() -> tuple[bool, str]:
         f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
         f"/sbin/pfctl -vnf {quoted_merged} >/dev/null 2>&1 && "
         f"/sbin/pfctl -e 2>/dev/null; "
-        f"/sbin/pfctl -f {quoted_merged} 2>&1 && "
+        f"/sbin/pfctl -f {quoted_merged} 2>/dev/null && "
         f"! /sbin/pfctl -sr 2>&1 | /usr/bin/grep -q cs2picker_blocked"
     )
     ok, output = _run_sudo(apply_cmd)
