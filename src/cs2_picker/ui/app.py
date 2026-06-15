@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 import customtkinter as ctk
 
 from cs2_picker.core.config import APP_NAME, APP_VERSION, SETTINGS_FILE, SUPPORT_DIR
+from cs2_picker.core.constants import GITHUB_RELEASES_URL, UPDATE_CHECK_INTERVAL_MS
 from cs2_picker.services.firewall import (
     block_all,
     block_regions,
@@ -19,6 +20,12 @@ from cs2_picker.services.firewall import (
 )
 from cs2_picker.services.ping import ping_server
 from cs2_picker.services.server import fetch_server_data, get_server_dict
+from cs2_picker.services.update import (
+    ReleaseInfo,
+    apply_update,
+    can_self_update,
+    check_for_update,
+)
 
 
 class MainWindow(ctk.CTk):
@@ -57,11 +64,15 @@ class MainWindow(ctk.CTk):
         self.server_revision = ""
         self.pending = False
         self._ping_cancel = threading.Event()
+        self._pending_release: ReleaseInfo | None = None
+        self._update_busy = False
 
         SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
         self._load_settings()
         self._build_ui()
         self.after(100, self._bootstrap)
+        self.after(3000, self._check_updates_async)
+        self._schedule_update_checks()
 
     def _load_settings(self) -> None:
         if SETTINGS_FILE.exists():
@@ -117,8 +128,19 @@ class MainWindow(ctk.CTk):
             corner_radius=8,
             fg_color=self.C["border"],
             hover_color=self.C["accent_h"],
-            command=lambda: webbrowser.open("https://github.com/FN-FAL113/cs2-server-picker"),
+            command=lambda: webbrowser.open(GITHUB_RELEASES_URL),
         ).pack(fill="x", padx=16, pady=4)
+
+        self.update_btn = ctk.CTkButton(
+            sidebar,
+            text="Güncelle",
+            height=34,
+            corner_radius=8,
+            fg_color=self.C["warn"],
+            hover_color="#d4921f",
+            text_color="#1a1a1e",
+            command=self._on_apply_update,
+        )
 
         ctk.CTkButton(
             sidebar,
@@ -463,9 +485,88 @@ class MainWindow(ctk.CTk):
             "• Cmd/Ctrl + tık ile çoklu seçim\n"
             "• Çift tık ile seçili sunuculara ping\n"
             "• Engelleme macOS pf firewall kullanır\n"
-            "• Admin şifresi istenir\n\n"
+            "• Admin şifresi istenir\n"
+            "• Güncellemeler GitHub Releases'tan kontrol edilir\n\n"
             f"Sürüm: {APP_VERSION}",
         )
+
+    def _schedule_update_checks(self) -> None:
+        self.after(UPDATE_CHECK_INTERVAL_MS, self._on_update_timer)
+
+    def _on_update_timer(self) -> None:
+        self._check_updates_async()
+        self._schedule_update_checks()
+
+    def _check_updates_async(self) -> None:
+        if self._update_busy:
+            return
+
+        def work():
+            release = check_for_update(APP_VERSION)
+            self.after(0, lambda: self._set_update_available(release))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _set_update_available(self, release: ReleaseInfo | None) -> None:
+        if release is None:
+            return
+        if self._pending_release and self._pending_release.version == release.version:
+            return
+
+        self._pending_release = release
+        self.update_btn.configure(text=f"Güncelle v{release.version}")
+        if not self.update_btn.winfo_ismapped():
+            self.update_btn.pack(fill="x", padx=16, pady=(8, 4), before=self.cluster_btn)
+
+    def _on_apply_update(self) -> None:
+        if not self._pending_release or self._update_busy:
+            return
+
+        release = self._pending_release
+        if not messagebox.askyesno(
+            "Güncelleme",
+            f"Yeni sürüm v{release.version} mevcut.\n\n"
+            f"Mevcut: v{APP_VERSION}\n\n"
+            "Güncellemek istiyor musun?",
+        ):
+            return
+
+        if not can_self_update():
+            webbrowser.open(release.html_url)
+            messagebox.showinfo(
+                "Güncelleme",
+                "Geliştirme modunda otomatik kurulum yok.\nRelease sayfası tarayıcıda açıldı.",
+            )
+            return
+
+        self._update_busy = True
+        self.update_btn.configure(state="disabled")
+        self.status_label.configure(text=f"v{release.version} indiriliyor…")
+
+        def work():
+            try:
+                def on_progress(done: int, total: int) -> None:
+                    pct = min(100, int(done * 100 / max(total, 1)))
+                    self.after(
+                        0,
+                        lambda p=pct: self.status_label.configure(
+                            text=f"Güncelleme indiriliyor… %{p}"
+                        ),
+                    )
+
+                apply_update(release, progress=on_progress)
+                self.after(0, self.destroy)
+            except Exception as exc:
+                self.after(0, lambda: messagebox.showerror("Güncelleme hatası", str(exc)))
+                self.after(0, self._reset_update_ui)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _reset_update_ui(self) -> None:
+        self._update_busy = False
+        self.update_btn.configure(state="normal")
+        count = len(self._server_dict())
+        self.status_label.configure(text=f"{count} sunucu · hazır")
 
 
 def main() -> None:
