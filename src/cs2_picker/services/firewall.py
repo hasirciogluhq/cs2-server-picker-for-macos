@@ -90,7 +90,7 @@ def _build_pf_rules(blocked: Set[str], server_dict: Dict[str, str]) -> str:
     ip_list = ", ".join(ips)
     lines.extend(
         [
-            "table <cs2picker_blocked> persist file "
+            "table <cs2picker_blocked> file "
             f'"{BLOCKED_IPS_FILE}"',
             "block out quick proto {tcp, udp} from any to <cs2picker_blocked>",
             "block in quick proto {tcp, udp} from <cs2picker_blocked> to any",
@@ -110,7 +110,7 @@ def _build_ruleset_section(blocked: Set[str], server_dict: Dict[str, str]) -> li
     table_path = str(BLOCKED_IPS_FILE).replace("\\", "\\\\").replace('"', '\\"')
     return [
         PF_MARKER_BEGIN,
-        f'table <cs2picker_blocked> persist file "{table_path}"',
+        f'table <cs2picker_blocked> file "{table_path}"',
         "block out quick proto {tcp, udp} from any to <cs2picker_blocked>",
         "block in quick proto {tcp, udp} from <cs2picker_blocked> to any",
         PF_MARKER_END,
@@ -185,12 +185,14 @@ def _apply_pf_rules(rules_content: str, blocked: Set[str], server_dict: Dict[str
     merged_path = SUPPORT_DIR / "merged.pf"
     merged_path.write_text(merged, encoding="utf-8")
     quoted = shlex.quote(str(merged_path))
+    quoted_ips = shlex.quote(str(BLOCKED_IPS_FILE))
 
     if expect_blocks:
         apply_cmd = (
             f"/sbin/pfctl -vnf {quoted} >/dev/null 2>&1 || exit 1; "
             f"/sbin/pfctl -e 2>/dev/null; "
             f"/sbin/pfctl -f {quoted} 2>&1; "
+            f"/sbin/pfctl -t cs2picker_blocked -T replace -f {quoted_ips} 2>&1; "
             f"/sbin/pfctl -sr 2>&1 | grep -q cs2picker_blocked"
         )
     else:
