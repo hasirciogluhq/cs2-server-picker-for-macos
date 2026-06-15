@@ -26,6 +26,8 @@ from cs2_picker.services.update import (
     apply_update,
     can_self_update,
     check_for_update,
+    get_update_log_path,
+    validate_self_update_target,
 )
 
 BLOCK_SUCCESS_MSG = (
@@ -571,6 +573,11 @@ class MainWindow(ctk.CTk):
             return
 
         if not can_self_update():
+            try:
+                validate_self_update_target()
+            except RuntimeError as exc:
+                messagebox.showerror("Update", str(exc))
+                return
             webbrowser.open(release.html_url)
             messagebox.showinfo(
                 "Update",
@@ -594,9 +601,17 @@ class MainWindow(ctk.CTk):
                     )
 
                 apply_update(release, progress=on_progress)
-                self.after(0, self._quit_for_update)
+                self.after(
+                    0,
+                    lambda: self.status_label.configure(text="Installing update…"),
+                )
+                self.after(300, self._quit_for_update)
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Update Error", str(exc)))
+                log_hint = f"\n\nLog: {get_update_log_path()}"
+                self.after(
+                    0,
+                    lambda: messagebox.showerror("Update Error", f"{exc}{log_hint}"),
+                )
                 self.after(0, self._reset_update_ui)
 
         threading.Thread(target=work, daemon=True).start()

@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,8 +111,43 @@ def get_app_bundle_path() -> Path | None:
     return None
 
 
+def get_update_log_path() -> Path:
+    log_dir = Path.home() / "Library" / "Logs" / "CS2ServerPicker"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "update.log"
+
+
+def is_app_translocated(app_path: Path) -> bool:
+    return "AppTranslocation" in str(app_path)
+
+
+def validate_self_update_target() -> Path:
+    current_app = get_app_bundle_path()
+    if current_app is None:
+        raise RuntimeError("Self-update is only available from the packaged .app bundle.")
+
+    if is_app_translocated(current_app):
+        raise RuntimeError(
+            "Move CS2 Server Picker.app to /Applications before using self-update.\n"
+            "macOS App Translocation breaks in-place updates."
+        )
+
+    parent = current_app.parent
+    if not os.access(parent, os.W_OK):
+        raise RuntimeError(
+            f"Cannot write to {parent}.\n"
+            "Move the app to a folder you own (e.g. /Applications)."
+        )
+
+    return current_app
+
+
 def can_self_update() -> bool:
-    return get_app_bundle_path() is not None
+    try:
+        validate_self_update_target()
+        return True
+    except RuntimeError:
+        return False
 
 
 def download_file(url: str, dest: Path, progress=None) -> None:
@@ -136,6 +172,7 @@ def download_file(url: str, dest: Path, progress=None) -> None:
 
 
 def extract_app_from_zip(zip_path: Path, work_dir: Path) -> Path:
+    """Used by tests/dev helpers; production updater extracts with ditto in shell."""
     with zipfile.ZipFile(zip_path, "r") as archive:
         archive.extractall(work_dir)
 
@@ -150,60 +187,106 @@ def extract_app_from_zip(zip_path: Path, work_dir: Path) -> Path:
     raise FileNotFoundError(f"{APP_BUNDLE_NAME} not found inside the update archive.")
 
 
-def _update_log_path() -> Path:
-    log_dir = Path.home() / "Library" / "Logs" / "CS2ServerPicker"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir / "update.log"
+def _write_updater_script() -> Path:
+    script_path = Path(tempfile.gettempdir()) / f"cs2picker-update-{os.getpid()}.sh"
+    script = r"""#!/bin/bash
+set -uo pipefail
 
+ZIP="$1"
+TARGET="$2"
+PID="$3"
+WORKDIR="$4"
+LOG="$5"
+APP_NAME="CS2 Server Picker.app"
 
-def _write_updater_script(current_app: Path, staged_app: Path, pid: int) -> Path:
-    script_path = Path(tempfile.gettempdir()) / f"cs2picker-update-{pid}.sh"
-    log_path = _update_log_path()
-    script = f"""#!/bin/bash
-set -u
-TARGET={shlex.quote(str(current_app))}
-STAGED={shlex.quote(str(staged_app))}
-WORKDIR={shlex.quote(str(staged_app.parent.parent))}
-PID={pid}
-LOG={shlex.quote(str(log_path))}
-MACOS_BIN="$TARGET/Contents/MacOS/CS2ServerPicker"
+mkdir -p "$(dirname "$LOG")"
+exec >>"$LOG" 2>&1
 
-log() {{
-  echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"
-}}
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $*"
+}
 
-log "Updater started (pid=$$, waiting for app pid=$PID)"
+log "==== CS2 Server Picker update started (pid=$$) ===="
+log "zip=$ZIP"
+log "target=$KCPU"
+log "waiting for app pid=$PID"
 
-for _ in $(seq 1 300); do
+for _ in $(seq 1 400); do
   if ! kill -0 "$PID" 2>/dev/null; then
+    log "app process exited"
     break
   fi
-  sleep 0.2
+  sleep 0.25
 done
 
-sleep 1
+sleep 2
 
-log "Replacing $TARGET"
-rm -rf "$TARGET"
-if ! ditto "$STAGED" "$TARGET"; then
-  log "ditto failed"
+EXTRACT="$WORKDIR/extract"
+BACKUP="$WORKDIR/backup.app"
+rm -rf "$EXTRACT" "$BACKUP"
+mkdir -p "$EXTRACT"
+
+log "extracting update zip"
+if ditto -x -k "$ZIP" "$EXTRACT" 2>/dev/null; then
+  log "extracted with ditto"
+elif /usr/bin/unzip -qq "$ZIP" -d "$EXTRACT"; then
+  log "extracted with unzip"
+else
+  log "extract failed"
   exit 1
 fi
 
-xattr -cr "$TARGET" 2>/dev/null || true
-chmod -R u+rwX "$TARGET" 2>/dev/null || true
-
-log "Launching updated app"
-if [ -x "$MACOS_BIN" ]; then
-  /usr/bin/open -n "$TARGET" || "$MACOS_BIN" &
-else
-  /usr/bin/open -n "$TARGET"
+STAGED=$(find "$EXTRACT" -name "$APP_NAME" -maxdepth 4 -print -quit)"
+if [ -z "$STAGED" ] || [ ! -d "$STAGED" ]; then
+  log "staged app not found in archive"
+  exit 1
 fi
 
-sleep 1
+MACOS_BIN="$STAGED/Contents/MacOS/CS2ServerPicker"
+if [ ! -f "$MACOS_BIN" ]; then
+  log "missing MacOS executable in staged app"
+  exit 1
+fi
+
+chmod -R u+rwX "$STAGED" 2>/dev/null || true
+chmod +x "$MACOS_BIN" "$STAGED/Contents/MacOS/"* 2>/dev/null || true
+
+if [ -d "$KCPU" ]; then
+  log "backing up current app"
+  ditto "$KCPU" "$BACKUP" || cp -R "$KCPU" "$BACKUP"
+fi
+
+log "installing update"
+rm -rf "$KCPU"
+if ! ditto "$STAGED" "$KCPU"; then
+  log "install ditto failed — restoring backup"
+  rm -rf "$KCPU"
+  if [ -d "$BACKUP" ]; then
+    ditto "$BACKUP" "$KCPU" || cp -R "$BACKUP" "$KCPU"
+  fi
+  exit 1
+fi
+
+MACOS_BIN="$KCPU/Contents/MacOS/CS2ServerPicker"
+chmod -R u+rwX "$KCPU" 2>/dev/null || true
+chmod +x "$MACOS_BIN" "$KCPU/Contents/MacOS/"* 2>/dev/null || true
+xattr -cr "$KCPU" 2>/dev/null || true
+/usr/bin/codesign --force --deep --sign - "$KCPU" 2>/dev/null || log "codesign skipped"
+
+log "launching updated app"
+if /usr/bin/open "$KCPU"; then
+  log "open succeeded"
+elif [ -x "$MACOS_BIN" ]; then
+  log "open failed, launching binary directly"
+  nohup "$MACOS_BIN" >/dev/null 2>&1 &
+else
+  log "could not launch updated app"
+  exit 1
+fi
+
+sleep 2
 rm -rf "$WORKDIR"
-rm -f {shlex.quote(str(script_path))}
-log "Update complete"
+log "update complete"
 """
     script_path.write_text(script, encoding="utf-8")
     script_path.chmod(0o755)
@@ -211,19 +294,27 @@ log "Update complete"
 
 
 def apply_update(release: ReleaseInfo, progress=None) -> None:
-    current_app = get_app_bundle_path()
-    if current_app is None:
-        raise RuntimeError("Self-update is only available from the packaged .app bundle.")
-
+    current_app = validate_self_update_target()
     work_dir = Path(tempfile.mkdtemp(prefix="cs2picker-update-"))
     zip_path = work_dir / "update.zip"
+    log_path = get_update_log_path()
 
     try:
         download_file(release.zip_url, zip_path, progress=progress)
-        staged_app = extract_app_from_zip(zip_path, work_dir / "extract")
-        script = _write_updater_script(current_app, staged_app, os.getpid())
+        if zip_path.stat().st_size < 1024:
+            raise RuntimeError("Downloaded update file is empty or corrupt.")
+
+        script = _write_updater_script()
         subprocess.Popen(
-            ["/bin/bash", str(script)],
+            [
+                "/bin/bash",
+                str(script),
+                str(zip_path),
+                str(current_app),
+                str(os.getpid()),
+                str(work_dir),
+                str(log_path),
+            ],
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -231,6 +322,8 @@ def apply_update(release: ReleaseInfo, progress=None) -> None:
             close_fds=True,
             cwd="/",
         )
+        # Give the detached updater time to start before the app exits.
+        time.sleep(1.5)
     except Exception:
         import shutil
 
