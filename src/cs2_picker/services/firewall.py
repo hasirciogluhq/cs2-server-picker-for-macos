@@ -90,27 +90,22 @@ def _build_pf_rules(blocked: Set[str], server_dict: Dict[str, str]) -> str:
     ip_list = ", ".join(ips)
     lines.extend(
         [
-            "table <cs2picker_blocked> file "
-            f'"{BLOCKED_IPS_FILE}"',
+            "table <cs2picker_blocked>",
             "block out quick proto {tcp, udp} from any to <cs2picker_blocked>",
             "block in quick proto {tcp, udp} from <cs2picker_blocked> to any",
             "",
-            f"# flat list: {ip_list}",
+            f"# blocked regions: {', '.join(sorted(blocked))}",
+            f"# blocked ips: {ip_list}",
             "",
         ]
     )
     return "\n".join(lines)
 
 
-def _build_ruleset_section(blocked: Set[str], server_dict: Dict[str, str]) -> list[str]:
-    ips = _collect_blocked_ips(blocked, server_dict)
-    if not ips:
-        return []
-
-    table_path = str(BLOCKED_IPS_FILE).replace("\\", "\\\\").replace('"', '\\"')
+def _build_ruleset_section() -> list[str]:
     return [
         PF_MARKER_BEGIN,
-        f'table <cs2picker_blocked> file "{table_path}"',
+        "table <cs2picker_blocked>",
         "block out quick proto {tcp, udp} from any to <cs2picker_blocked>",
         "block in quick proto {tcp, udp} from <cs2picker_blocked> to any",
         PF_MARKER_END,
@@ -173,54 +168,108 @@ def _merge_ruleset(base: str, section: list[str]) -> str:
     return merged + ("\n" if not merged.endswith("\n") else "")
 
 
-def _apply_pf_rules(rules_content: str, blocked: Set[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
-    _ensure_dirs()
-    PF_RULES_FILE.write_text(rules_content)
-    _sync_blocked_ips_file(blocked, server_dict)
+def _rules_active() -> bool:
+    if not LAST_PF_RULESET_FILE.exists():
+        return False
+    try:
+        return PF_MARKER_BEGIN in LAST_PF_RULESET_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return False
 
-    section = _build_ruleset_section(blocked, server_dict)
-    expect_blocks = bool(section)
+
+def _write_merged_ruleset(section: list[str]) -> Path:
     merged = _merge_ruleset(_load_base_ruleset(), section)
-
     merged_path = SUPPORT_DIR / "merged.pf"
     merged_path.write_text(merged, encoding="utf-8")
+    return merged_path
+
+
+def _install_pf_rules() -> tuple[bool, str]:
+    _ensure_dirs()
+    section = _build_ruleset_section()
+    merged_path = _write_merged_ruleset(section)
     quoted = shlex.quote(str(merged_path))
-    quoted_ips = shlex.quote(str(BLOCKED_IPS_FILE))
-
-    if expect_blocks:
-        apply_cmd = (
-            f"/sbin/pfctl -vnf {quoted} >/dev/null 2>&1 || exit 1; "
-            f"/sbin/pfctl -e 2>/dev/null; "
-            f"/sbin/pfctl -f {quoted} 2>&1; "
-            f"/sbin/pfctl -t cs2picker_blocked -T replace -f {quoted_ips} 2>&1; "
-            f"/sbin/pfctl -sr 2>&1 | grep -q cs2picker_blocked"
-        )
-    else:
-        apply_cmd = (
-            f"/sbin/pfctl -vnf {quoted} >/dev/null 2>&1 || exit 1; "
-            f"/sbin/pfctl -e 2>/dev/null; "
-            f"/sbin/pfctl -f {quoted} 2>&1; "
-            f"! /sbin/pfctl -sr 2>&1 | grep -q cs2picker_blocked"
-        )
-
+    apply_cmd = (
+        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
+        f"/sbin/pfctl -vnf {quoted} >/dev/null 2>&1 || exit 1; "
+        f"/sbin/pfctl -e 2>/dev/null; "
+        f"/sbin/pfctl -f {quoted} 2>&1; "
+        f"/sbin/pfctl -sr 2>&1 | grep -q cs2picker_blocked"
+    )
     ok, output = _run_sudo(apply_cmd)
-    if not ok:
-        if PF_CONF.is_file() and not LAST_PF_RULESET_FILE.exists():
-            merged = _merge_ruleset(PF_CONF.read_text(encoding="utf-8"), section)
-            merged_path.write_text(merged, encoding="utf-8")
-            ok, output = _run_sudo(apply_cmd)
-        if not ok:
-            return False, output or "Failed to apply pf firewall rules."
+    if not ok and PF_CONF.is_file() and not LAST_PF_RULESET_FILE.exists():
+        merged = _merge_ruleset(PF_CONF.read_text(encoding="utf-8"), section)
+        merged_path.write_text(merged, encoding="utf-8")
+        ok, output = _run_sudo(apply_cmd)
+    if ok:
+        LAST_PF_RULESET_FILE.write_text(merged_path.read_text(encoding="utf-8"), encoding="utf-8")
+    return ok, output or "Failed to install pf firewall rules."
 
-    LAST_PF_RULESET_FILE.write_text(merged, encoding="utf-8")
-    return True, output
+
+def _remove_pf_rules() -> tuple[bool, str]:
+    _ensure_dirs()
+    merged_path = _write_merged_ruleset([])
+    quoted = shlex.quote(str(merged_path))
+    apply_cmd = (
+        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>/dev/null; "
+        f"/sbin/pfctl -vnf {quoted} >/dev/null 2>&1 || exit 1; "
+        f"/sbin/pfctl -e 2>/dev/null; "
+        f"/sbin/pfctl -f {quoted} 2>&1; "
+        f"! /sbin/pfctl -sr 2>&1 | grep -q cs2picker_blocked"
+    )
+    ok, output = _run_sudo(apply_cmd)
+    if not ok and PF_CONF.is_file() and not LAST_PF_RULESET_FILE.exists():
+        merged = _merge_ruleset(PF_CONF.read_text(encoding="utf-8"), [])
+        merged_path.write_text(merged, encoding="utf-8")
+        ok, output = _run_sudo(apply_cmd)
+    if ok:
+        LAST_PF_RULESET_FILE.write_text(merged_path.read_text(encoding="utf-8"), encoding="utf-8")
+    return ok, output or "Failed to remove pf firewall rules."
+
+
+def _replace_table_ips(ips: list[str]) -> tuple[bool, str]:
+    if not ips:
+        return True, ""
+    if not BLOCKED_IPS_FILE.is_file():
+        return False, "Blocked IP list file is missing."
+
+    quoted_ips = shlex.quote(str(BLOCKED_IPS_FILE))
+    apply_cmd = (
+        f"/sbin/pfctl -t cs2picker_blocked -T flush 2>&1; "
+        f"/sbin/pfctl -t cs2picker_blocked -T add -f {quoted_ips} 2>&1"
+    )
+    return _run_sudo(apply_cmd)
+
+
+def _apply_blocked_state(blocked: Set[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
+    _ensure_dirs()
+    ips = _collect_blocked_ips(blocked, server_dict)
+    rules = _build_pf_rules(blocked, server_dict)
+    PF_RULES_FILE.write_text(rules)
+    _sync_blocked_ips_file(blocked, server_dict)
+
+    if not ips:
+        return _remove_pf_rules()
+
+    if not _rules_active():
+        ok, err = _install_pf_rules()
+        if not ok:
+            return False, err
+
+    ok, err = _replace_table_ips(ips)
+    if ok:
+        return True, err
+
+    ok, err = _install_pf_rules()
+    if not ok:
+        return False, err
+    return _replace_table_ips(ips)
 
 
 def block_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
     blocked = load_blocked()
     blocked.update(regions)
-    rules = _build_pf_rules(blocked, server_dict)
-    ok, err = _apply_pf_rules(rules, blocked, server_dict)
+    ok, err = _apply_blocked_state(blocked, server_dict)
     if ok:
         save_blocked(blocked)
     return ok, err
@@ -228,23 +277,24 @@ def block_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool
 
 def unblock_regions(regions: list[str], server_dict: Dict[str, str]) -> tuple[bool, str]:
     blocked = load_blocked()
-    for r in regions:
-        blocked.discard(r)
-    rules = _build_pf_rules(blocked, server_dict)
-    ok, err = _apply_pf_rules(rules, blocked, server_dict)
+    for region in regions:
+        blocked.discard(region)
+    ok, err = _apply_blocked_state(blocked, server_dict)
     if ok:
         save_blocked(blocked)
     return ok, err
 
 
 def block_all(server_dict: Dict[str, str]) -> tuple[bool, str]:
-    return block_regions(list(server_dict.keys()), server_dict)
+    blocked = set(server_dict.keys())
+    ok, err = _apply_blocked_state(blocked, server_dict)
+    if ok:
+        save_blocked(blocked)
+    return ok, err
 
 
 def unblock_all(server_dict: Dict[str, str]) -> tuple[bool, str]:
-    blocked: Set[str] = set()
-    rules = _build_pf_rules(blocked, server_dict)
-    ok, err = _apply_pf_rules(rules, blocked, server_dict)
+    ok, err = _apply_blocked_state(set(), server_dict)
     if ok:
         save_blocked(set())
     return ok, err
